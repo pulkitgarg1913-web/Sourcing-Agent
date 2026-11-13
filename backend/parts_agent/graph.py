@@ -266,22 +266,29 @@ async def navigate(state: State, config) -> State:
                     needs[i] = await advance_vendor("autodukan", adapter)
 
     valid_needs = []
+    boodmo_has_active_need = any(v == "boodmo" and n is not None for (v, _), n in zip(vendors, needs))
     for (vendor, _adapter), vendor_need in zip(vendors, needs):
         if not vendor_need:
             continue
-        # If Boodmo is present in the session, let Boodmo lead the variant questions.
+        # If Boodmo is present in the session and actively has a need, let Boodmo lead the variant questions.
         # AutoDukan will match Boodmo's resolved variant automatically once finalized.
         if vendor == "autodukan" and vendor_need.field in ("variant", "variant_attr"):
-            if "boodmo" in session.adapters:
+            if "boodmo" in session.adapters and boodmo_has_active_need:
                 continue
         valid_needs.append(_need_for_vendor(vendor_need, vendor))
 
     need = valid_needs[0] if valid_needs else None
     if not need and getattr(session, "require_confirmation", False) and not state.get("confirmed"):
-        car_label = " ".join(x for x in (boodmo_p.maker, boodmo_p.model, boodmo_p.year, boodmo_p.variant) if x)
+        active_p = boodmo_p or profiles.get("autodukan")
+        maker = (boodmo_p and boodmo_p.maker) or (profiles.get("autodukan") and profiles["autodukan"].maker) or ""
+        model = (boodmo_p and boodmo_p.model) or (profiles.get("autodukan") and profiles["autodukan"].model) or ""
+        year = (boodmo_p and boodmo_p.year) or (profiles.get("autodukan") and profiles["autodukan"].year) or ""
+        variant = (boodmo_p and boodmo_p.variant) or (profiles.get("autodukan") and profiles["autodukan"].variant) or ""
+        part = (active_p and (active_p.part or active_p.category)) or "parts"
+        car_label = " ".join(x for x in (maker, model, year, variant) if x)
         need = {
             "field": "confirm_search",
-            "question": f"Ready to search suppliers for {boodmo_p.part or 'parts'} fitting {car_label}?",
+            "question": f"Ready to search suppliers for {part} fitting {car_label}?",
             "options": ["Confirm & Search Suppliers", "Change Vehicle Details"],
             "candidate": car_label,
             "vendor": "all",

@@ -42,9 +42,19 @@ CHROMIUM_ARGS = [
     "--no-zygote",
     "--disable-software-rasterizer",
     "--mute-audio",
+    "--disable-background-networking",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-breakpad",
+    "--disable-component-extensions-with-background-pages",
+    "--disable-extensions",
+    "--disable-features=Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints",
+    "--disable-ipc-flooding-protection",
+    "--disable-renderer-backgrounding",
+    "--js-flags=--max-old-space-size=256",
 ]
 MAX_PRODUCT_PAGES = 12
-DETAIL_WORKERS = 3
+DETAIL_WORKERS = 2 if os.environ.get("DISPLAY") else 1
 
 
 def _clean(value: Optional[str]) -> str:
@@ -247,11 +257,17 @@ class AutoDukanAdapter:
             ctx_opts["record_video_dir"] = self.record_video_dir
             ctx_opts["record_video_size"] = {"width": 1280, "height": 720}
         context = await self.browser.new_context(**ctx_opts)
+        async def _block_heavy(route):
+            try:
+                if route.request.resource_type in ("image", "media", "font"):
+                    await route.abort()
+                else:
+                    await route.continue_()
+            except Exception:
+                pass
+
         try:
-            await context.route(
-                "**/*",
-                lambda r: r.abort() if r.request.resource_type in ["image", "media", "font"] else r.continue_(),
-            )
+            await context.route("**/*", _block_heavy)
         except Exception:
             pass
         self.page = await context.new_page()
@@ -273,35 +289,49 @@ class AutoDukanAdapter:
         self._pw = None
 
     async def _wait(self, ms: int):
-        try:
-            if self.page and not self.page.is_closed():
-                await self._wait(ms)
-            else:
-                await asyncio.sleep(ms / 1000.0)
-        except Exception:
-            await asyncio.sleep(ms / 1000.0)
+        await asyncio.sleep(ms / 1000.0)
 
     async def _goto(self, url: str):
-        try:
-            await self.page.goto(url, wait_until="domcontentloaded", timeout=25000)
-        except Exception as exc:
-            log.warning("AutoDukan domcontentloaded timeout navigating to %s (%s), retrying with commit...", url, exc)
+        for attempt in range(2):
             try:
-                await self.page.goto(url, wait_until="commit", timeout=12000)
-            except Exception as e2:
-                log.error("AutoDukan navigation failed for %s: %s", url, e2)
-                raise
-        try:
-            await self.page.wait_for_load_state("networkidle", timeout=4000)
-        except Exception:
-            # The storefront may keep analytics or long-polling connections open.
-            pass
+                if not self.page or self.page.is_closed():
+                    if not self.browser or not self.browser.is_connected():
+                        await self.start()
+                    else:
+                        ctx = self.browser.contexts[0] if self.browser.contexts else await self.browser.new_context()
+                        self.page = await ctx.new_page()
+                await self.page.goto(url, wait_until="domcontentloaded", timeout=25000)
+                break
+            except Exception as exc:
+                err_msg = str(exc).lower()
+                is_crash = "crashed" in err_msg or "closed" in err_msg
+                log.warning("AutoDukan navigation attempt %d failed for %s (%s)", attempt + 1, url, exc)
+                if is_crash and self.page:
+                    try:
+                        await self.page.close()
+                    except Exception:
+                        pass
+                    self.page = None
+                if attempt == 0:
+                    try:
+                        if not self.page or self.page.is_closed():
+                            ctx = self.browser.contexts[0] if (self.browser and self.browser.contexts) else None
+                            if ctx:
+                                self.page = await ctx.new_page()
+                        if self.page:
+                            await self.page.goto(url, wait_until="commit", timeout=12000)
+                            break
+                    except Exception as e2:
+                        log.warning("AutoDukan retry commit failed: %s", e2)
+                else:
+                    raise
         try:
             if self.page and not self.page.is_closed():
-                await self._wait(500)
+                await self.page.wait_for_load_state("networkidle", timeout=4000)
         except Exception:
-            await asyncio.sleep(0.5)
-        self.last_search_url = self.page.url if self.page else url
+            pass
+        await asyncio.sleep(0.4)
+        self.last_search_url = self.page.url if self.page and not self.page.is_closed() else url
 
     # ------------------------------------------------------------------ contract
 
@@ -339,6 +369,11 @@ class AutoDukanAdapter:
             (r"\b(shock\s*absorber|strut)\b", "SHOCK ABSORBER"),
             (r"\b(water\s*pump)\b", "WATER PUMP"),
             (r"\b(timing\s*belt|fan\s*belt|serpentine\s*belt|drive\s*belt)\b", "BELTS"),
+            (r"\b(cooling\s*coil|cooling\s*coils|evaporator|evaporators|ac\s*cooling\s*coil)\b", "EVAPORATOR"),
+            (r"\b(condenser|condensers|ac\s*condenser)\b", "CONDENSER"),
+            (r"\b(compressor|compressors|ac\s*compressor)\b", "COMPRESSOR"),
+            (r"\b(blower|blower\s*motor)\b", "BLOWER MOTOR"),
+            (r"\b(expansion\s*valve)\b", "EXPANSION VALVE"),
         )
         for pattern, category in direct:
             if re.search(pattern, part) or (requested_category and re.search(pattern, _norm(requested_category))):
@@ -494,6 +529,16 @@ class AutoDukanAdapter:
             return ["SHOCK ABSORBER"]
         if "trans" in normalized or "gear" in normalized:
             return ["TRANSMISSION"]
+        if "evaporat" in normalized or "coolingcoil" in normalized or ("cooling" in normalized and "coil" in normalized):
+            return ["AIR CONDITIONING", "EVAPORATOR"]
+        if "condenser" in normalized:
+            return ["AIR CONDITIONING", "CONDENSER"]
+        if "compressor" in normalized:
+            return ["AIR CONDITIONING", "COMPRESSOR"]
+        if "blower" in normalized:
+            return ["AIR CONDITIONING", "BLOWER MOTOR"]
+        if "expansion" in normalized:
+            return ["AIR CONDITIONING", "EXPANSION VALVE"]
         return [category]
 
     @staticmethod
@@ -537,6 +582,16 @@ class AutoDukanAdapter:
             return "water-pump"
         if "trans" in norm or "gear" in norm:
             return "transmission"
+        if "evaporat" in norm or "coolingcoil" in norm or ("cooling" in norm and "coil" in norm):
+            return "evaporator"
+        if "condenser" in norm:
+            return "condenser"
+        if "compressor" in norm:
+            return "compressor"
+        if "blower" in norm:
+            return "blower-motor"
+        if "expansion" in norm:
+            return "expansion-valve"
         return re.sub(r"[^a-z0-9]+", "-", _norm(category).strip()).strip("-")
 
     async def _search_fallback(self, profile: VehicleProfile) -> None:

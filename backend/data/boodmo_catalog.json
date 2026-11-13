@@ -486,7 +486,14 @@
     "Luggage Carrier": "/catalog/6288-luggage_carrier/",
     "Fuel Pump": "/catalog/3620-fuel_pump/",
     "Car Battery": "/catalog/3628-battery/",
-    "Horn": "/catalog/4650-horn/"
+    "Horn": "/catalog/4650-horn/",
+    "Evaporator": "/catalog/4163-evaporator/",
+    "AC Condenser": "/catalog/3524-condenser/",
+    "AC Compressor": "/catalog/3555-compressor/",
+    "Blower Motor": "/catalog/4161-blower_motor/",
+    "Expansion Valve": "/catalog/3619-expansion_valve/",
+    "Heater Control Valve": "/catalog/6289-heater_control_valve/",
+    "HVAC Hose": "/catalog/4158-hose_heat_exchange_heating/"
   },
   "synonyms_and_fallbacks": {
     "radiator": {
@@ -723,6 +730,91 @@
     "horn": {
       "primary": "Horn",
       "alternates": []
+    },
+    "cooling coil": {
+      "primary": "Evaporator",
+      "alternates": [
+        "AC Condenser",
+        "Cabin Filter",
+        "Blower Motor"
+      ]
+    },
+    "ac cooling coil": {
+      "primary": "Evaporator",
+      "alternates": [
+        "AC Condenser",
+        "Cabin Filter"
+      ]
+    },
+    "car cooling coil": {
+      "primary": "Evaporator",
+      "alternates": [
+        "AC Condenser",
+        "Cabin Filter"
+      ]
+    },
+    "evaporator coil": {
+      "primary": "Evaporator",
+      "alternates": [
+        "AC Condenser"
+      ]
+    },
+    "ac coil": {
+      "primary": "Evaporator",
+      "alternates": [
+        "AC Condenser"
+      ]
+    },
+    "evaporator": {
+      "primary": "Evaporator",
+      "alternates": [
+        "AC Condenser",
+        "Cabin Filter"
+      ]
+    },
+    "condenser": {
+      "primary": "AC Condenser",
+      "alternates": [
+        "Radiator",
+        "Evaporator"
+      ]
+    },
+    "ac condenser": {
+      "primary": "AC Condenser",
+      "alternates": [
+        "Radiator",
+        "Evaporator"
+      ]
+    },
+    "compressor": {
+      "primary": "AC Compressor",
+      "alternates": [
+        "AC Condenser"
+      ]
+    },
+    "ac compressor": {
+      "primary": "AC Compressor",
+      "alternates": [
+        "AC Condenser"
+      ]
+    },
+    "blower motor": {
+      "primary": "Blower Motor",
+      "alternates": [
+        "Cabin Filter"
+      ]
+    },
+    "blower": {
+      "primary": "Blower Motor",
+      "alternates": [
+        "Cabin Filter"
+      ]
+    },
+    "expansion valve": {
+      "primary": "Expansion Valve",
+      "alternates": [
+        "Evaporator"
+      ]
     }
   }
 }

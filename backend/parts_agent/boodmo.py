@@ -38,6 +38,16 @@ CHROMIUM_ARGS = [
     "--no-zygote",
     "--disable-software-rasterizer",
     "--mute-audio",
+    "--disable-background-networking",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-breakpad",
+    "--disable-component-extensions-with-background-pages",
+    "--disable-extensions",
+    "--disable-features=Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints",
+    "--disable-ipc-flooding-protection",
+    "--disable-renderer-backgrounding",
+    "--js-flags=--max-old-space-size=256",
 ]
 CATALOG_FILE = Path(__file__).resolve().parent.parent / "data" / "boodmo_catalog.json"
 if not CATALOG_FILE.exists():
@@ -83,7 +93,7 @@ SELECTS = {
 }
 
 ENRICH_LIMIT = 12      # product pages to open for seller/stock details
-ENRICH_TABS = 4        # opened concurrently
+ENRICH_TABS = 2 if os.environ.get("DISPLAY") else 1        # opened concurrently
 
 # Words that turn a part class into an accessory of the requested part,
 # e.g. "Oil Filter Assy" / "Oil Filter Housing" under the Oil Filter category.
@@ -171,11 +181,17 @@ class BoodmoAdapter:
             ctx_opts["record_video_dir"] = self.record_video_dir
             ctx_opts["record_video_size"] = {"width": 1280, "height": 720}
         ctx = await self.browser.new_context(**ctx_opts)
+        async def _block_heavy(route):
+            try:
+                if route.request.resource_type in ("image", "media", "font"):
+                    await route.abort()
+                else:
+                    await route.continue_()
+            except Exception:
+                pass
+
         try:
-            await ctx.route(
-                "**/*",
-                lambda r: r.abort() if r.request.resource_type in ["image", "media", "font"] else r.continue_(),
-            )
+            await ctx.route("**/*", _block_heavy)
         except Exception:
             pass
         self.page = await ctx.new_page()
@@ -195,26 +211,45 @@ class BoodmoAdapter:
         self.page = self.browser = self._pw = None
 
     async def _wait(self, ms: int):
-        try:
-            if self.page and not self.page.is_closed():
-                await self._wait(ms)
-            else:
-                await asyncio.sleep(ms / 1000.0)
-        except Exception:
-            await asyncio.sleep(ms / 1000.0)
+        await asyncio.sleep(ms / 1000.0)
 
     async def _goto(self, url: str):
-        try:
-            await self.page.goto(url, wait_until="domcontentloaded", timeout=25000)
-        except Exception as exc:
-            log.warning("Boodmo domcontentloaded timeout navigating to %s (%s), retrying with commit...", url, exc)
+        for attempt in range(2):
             try:
-                await self.page.goto(url, wait_until="commit", timeout=12000)
-            except Exception as e2:
-                log.error("Boodmo navigation failed for %s: %s", url, e2)
-                raise
+                if not self.page or self.page.is_closed():
+                    if not self.browser or not self.browser.is_connected():
+                        await self.start()
+                    else:
+                        ctx = self.browser.contexts[0] if self.browser.contexts else await self.browser.new_context()
+                        self.page = await ctx.new_page()
+                await self.page.goto(url, wait_until="domcontentloaded", timeout=25000)
+                break
+            except Exception as exc:
+                err_msg = str(exc).lower()
+                is_crash = "crashed" in err_msg or "closed" in err_msg
+                log.warning("Boodmo navigation attempt %d failed for %s (%s)", attempt + 1, url, exc)
+                if is_crash and self.page:
+                    try:
+                        await self.page.close()
+                    except Exception:
+                        pass
+                    self.page = None
+                if attempt == 0:
+                    try:
+                        if not self.page or self.page.is_closed():
+                            ctx = self.browser.contexts[0] if (self.browser and self.browser.contexts) else None
+                            if ctx:
+                                self.page = await ctx.new_page()
+                        if self.page:
+                            await self.page.goto(url, wait_until="commit", timeout=12000)
+                            break
+                    except Exception as e2:
+                        log.warning("Boodmo retry commit failed: %s", e2)
+                else:
+                    raise
         try:
-            await self.page.wait_for_load_state("networkidle", timeout=5000)
+            if self.page and not self.page.is_closed():
+                await self.page.wait_for_load_state("networkidle", timeout=4000)
         except Exception:
             pass
 
@@ -293,13 +328,15 @@ class BoodmoAdapter:
         # 4. LLM semantic categorization with offline fallback
         self.progress(f"Finding the '{part}' category on Boodmo")
         cat_names = list(cat_map.keys())
+        part_words = set(norm_p.split())
+        cat_cands = sorted(cat_names, key=lambda c: len(part_words & set(_norm(c).split())), reverse=True)[:100]
         ranked: list[str] = []
         try:
             resp = await llm.generate_async(
                 "You are an automotive parts expert. Which Boodmo category best matches this car part?\n"
                 f"Part: {part}\n"
                 "Return up to 3 category names from the list below, exactly as written, one per line:\n"
-                + "\n".join(cat_names[:150])
+                + "\n".join(cat_cands)
             )
             picks = [l.strip(" -*") for l in (resp.text or "").splitlines() if l.strip(" -*") in cat_map]
             ranked = picks[:3]
@@ -646,7 +683,7 @@ class BoodmoAdapter:
             if not await page.query_selector(".part-info-spec"):
                 listing.notes.append("product page did not load; stock not checked")
                 return
-        await page.wait_for_timeout(400)
+        await asyncio.sleep(0.4)
         info = await page.evaluate(
             """() => {
                 const spec = {};
