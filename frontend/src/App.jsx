@@ -116,6 +116,26 @@ export default function App() {
           setVehicleProfile(event.profile)
         }
         setIsSearching(false)
+        if (event.pending?.question) {
+          setMessages((prev) => {
+            const last = prev[prev.length - 1]
+            if (
+              last &&
+              (last.text === event.pending.question ||
+                last.message === event.pending.question)
+            ) {
+              return prev
+            }
+            return [
+              ...prev,
+              {
+                role: "agent",
+                text: event.pending.question,
+                timestamp: timeStr,
+              },
+            ]
+          })
+        }
         break
 
       case "vehicle_profile_update":

@@ -504,6 +504,22 @@ async def start_chat(payload: StartRequest):
                     sse_manager.publish(
                         thread_id,
                         {
+                            "type": "agent_message",
+                            "message": q.get("question", ""),
+                            "role": "agent",
+                        },
+                    )
+                    sse_manager.publish(
+                        thread_id,
+                        {
+                            "type": "log_event",
+                            "message": f"Agent: {q.get('question', '')}",
+                            "level": "info",
+                        },
+                    )
+                    sse_manager.publish(
+                        thread_id,
+                        {
                             "type": "need_input",
                             "pending": q,
                             "profile": profile_dict,
@@ -578,6 +594,22 @@ async def reply_chat(payload: ReplyRequest):
 
                 if q:
                     log.info("Session %s asks next question: %s", thread_id, q.get("question"))
+                    sse_manager.publish(
+                        thread_id,
+                        {
+                            "type": "agent_message",
+                            "message": q.get("question", ""),
+                            "role": "agent",
+                        },
+                    )
+                    sse_manager.publish(
+                        thread_id,
+                        {
+                            "type": "log_event",
+                            "message": f"Agent: {q.get('question', '')}",
+                            "level": "info",
+                        },
+                    )
                     sse_manager.publish(
                         thread_id,
                         {
