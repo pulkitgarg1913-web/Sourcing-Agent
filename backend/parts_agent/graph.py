@@ -524,9 +524,9 @@ async def collect(state: State, config) -> State:
             )
 
     vendors = list(s.adapters.items())
-    outcomes = await asyncio.gather(*(
-        collect_vendor(adapter, profiles[name]) for name, adapter in vendors
-    ))
+    outcomes = []
+    for name, adapter in vendors:
+        outcomes.append(await collect_vendor(adapter, profiles[name]))
     vendor_outcomes = [asdict(outcome) for outcome in outcomes]
     all_listings = [
         {**listing, "vendor": outcome.vendor}

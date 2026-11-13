@@ -48,13 +48,14 @@ CHROMIUM_ARGS = [
     "--disable-breakpad",
     "--disable-component-extensions-with-background-pages",
     "--disable-extensions",
-    "--disable-features=Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints",
+    "--disable-features=Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints,IsolateOrigins,site-per-process",
     "--disable-ipc-flooding-protection",
     "--disable-renderer-backgrounding",
-    "--js-flags=--max-old-space-size=256",
+    "--force-color-profile=srgb",
+    "--js-flags=--max-old-space-size=128",
 ]
-MAX_PRODUCT_PAGES = 12
-DETAIL_WORKERS = 2 if os.environ.get("DISPLAY") else 1
+MAX_PRODUCT_PAGES = 6 if not os.environ.get("DISPLAY") else 12
+DETAIL_WORKERS = 1 if not os.environ.get("DISPLAY") else 2
 
 
 def _clean(value: Optional[str]) -> str:
@@ -1060,12 +1061,17 @@ class AutoDukanAdapter:
             try:
                 await self._goto(target_url)
                 await self._wait(1500)
-                body = _norm(await self.page.locator("body").inner_text())
-                if "product not found" in body or "/products-list" in self.page.url:
-                    self._category_confirmed = True
-                    self._confirmed_category = requested
-                    self.last_search_url = self.page.url
-                    return True, ""
+                if self.page and not self.page.is_closed():
+                    body = ""
+                    try:
+                        body = _norm(await self.page.locator("body").inner_text(timeout=4000))
+                    except Exception:
+                        pass
+                    if "product not found" in body or (self.page and "/products-list" in self.page.url):
+                        self._category_confirmed = True
+                        self._confirmed_category = requested
+                        self.last_search_url = self.page.url
+                        return True, ""
             except Exception as exc:
                 log.info("AutoDukan direct vehicle category navigation failed: %s", exc)
 
@@ -1146,8 +1152,12 @@ class AutoDukanAdapter:
 
     async def _read_cards(self) -> list[dict]:
         """Extract product-like cards from AutoDukan's rendered category page."""
-        return await self.page.evaluate(
-            r"""() => {
+        for attempt in range(2):
+            try:
+                if not self.page or self.page.is_closed():
+                    return []
+                return await self.page.evaluate(
+                    r"""() => {
                 const clean = v => (v || '').replace(/\s+/g, ' ').trim();
                 const abs = href => { try { return new URL(href, location.href).href; } catch (_) { return ''; } };
                 const bad = /^(home|product list|login|sign in|contact|faq|blogs|about us|all categories|oem brands|oes brands|return policy|privacy policy|terms of use|disclaimer|become an autodukan seller|become a seller|contact us|about us|more than parts.*|we'd love to hear.*|customer care|help center|download app|all rights reserved|terms)$/i;
@@ -1208,7 +1218,16 @@ class AutoDukanAdapter:
                 }
                 return out;
             }"""
-        )
+                )
+            except Exception as exc:
+                log.warning("AutoDukan _read_cards attempt %d failed: %s", attempt + 1, exc)
+                if attempt == 0 and self.page and not self.page.is_closed():
+                    try:
+                        await self.page.reload(wait_until="domcontentloaded", timeout=12000)
+                        await self._wait(1000)
+                    except Exception:
+                        pass
+        return []
 
     async def _page_state(self) -> dict:
         return await self.page.evaluate("""() => ({

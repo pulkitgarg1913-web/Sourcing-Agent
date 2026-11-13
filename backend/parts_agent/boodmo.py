@@ -44,10 +44,11 @@ CHROMIUM_ARGS = [
     "--disable-breakpad",
     "--disable-component-extensions-with-background-pages",
     "--disable-extensions",
-    "--disable-features=Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints",
+    "--disable-features=Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints,IsolateOrigins,site-per-process",
     "--disable-ipc-flooding-protection",
     "--disable-renderer-backgrounding",
-    "--js-flags=--max-old-space-size=256",
+    "--force-color-profile=srgb",
+    "--js-flags=--max-old-space-size=128",
 ]
 CATALOG_FILE = Path(__file__).resolve().parent.parent / "data" / "boodmo_catalog.json"
 if not CATALOG_FILE.exists():
@@ -92,8 +93,8 @@ SELECTS = {
     "variant": r"^Choose Modification",
 }
 
-ENRICH_LIMIT = 12      # product pages to open for seller/stock details
-ENRICH_TABS = 2 if os.environ.get("DISPLAY") else 1        # opened concurrently
+ENRICH_LIMIT = 4 if not os.environ.get("DISPLAY") else 12      # product pages to open for seller/stock details
+ENRICH_TABS = 1 if not os.environ.get("DISPLAY") else 2        # opened concurrently
 
 # Words that turn a part class into an accessory of the requested part,
 # e.g. "Oil Filter Assy" / "Oil Filter Housing" under the Oil Filter category.
@@ -649,23 +650,38 @@ class BoodmoAdapter:
 
     async def _read_tiles(self) -> list[dict]:
         try:
+            if not self.page or self.page.is_closed():
+                return []
             await self.page.wait_for_selector(".products-grid .product-item-tile, .result-header__total",
-                                              timeout=12000)
+                                              timeout=8000)
         except Exception:
             pass
-        await self._wait(800)
-        return await self.page.evaluate(
-            """() => [...document.querySelectorAll('.products-grid .product-item-tile')].map(t => {
-                const q = s => t.querySelector(s)?.innerText.trim() || null;
-                return {
-                    title: q('.product-item-tile__title'),
-                    price: q('.product-item-tile__price__current'),
-                    mrp: q('.product-item-tile__price__mrp--discount'),
-                    brand: q('.product-item-tile__desc__brand'),
-                    number: q('.product-item-tile__desc__number'),
-                    href: t.querySelector('a.product-item-tile__in')?.getAttribute('href'),
-                };
-            })""")
+        await self._wait(600)
+        for attempt in range(2):
+            try:
+                if not self.page or self.page.is_closed():
+                    return []
+                return await self.page.evaluate(
+                    """() => [...document.querySelectorAll('.products-grid .product-item-tile')].map(t => {
+                        const q = s => t.querySelector(s)?.innerText.trim() || null;
+                        return {
+                            title: q('.product-item-tile__title'),
+                            price: q('.product-item-tile__price__current'),
+                            mrp: q('.product-item-tile__price__mrp--discount'),
+                            brand: q('.product-item-tile__desc__brand'),
+                            number: q('.product-item-tile__desc__number'),
+                            href: t.querySelector('a.product-item-tile__in')?.getAttribute('href'),
+                        };
+                    })""")
+            except Exception as exc:
+                log.warning("Boodmo _read_tiles attempt %d failed: %s", attempt + 1, exc)
+                if attempt == 0 and self.page and not self.page.is_closed():
+                    try:
+                        await self.page.reload(wait_until="domcontentloaded", timeout=12000)
+                        await self._wait(1000)
+                    except Exception:
+                        pass
+        return []
 
     async def _enrich(self, page: Page, listing: Listing, category: Optional[str] = None):
         try:
