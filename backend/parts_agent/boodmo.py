@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Callable, Optional
@@ -134,6 +135,8 @@ class BoodmoAdapter:
 
     def __init__(self, headless: bool = True, progress: Callable[[str], None] | None = None,
                  record_video_dir: Optional[str] = None):
+        if not os.environ.get("DISPLAY"):
+            headless = True
         self.headless = headless
         self.progress = progress or (lambda msg: None)
         self.record_video_dir = record_video_dir
@@ -669,9 +672,10 @@ class BoodmoAdapter:
         """Read listings for the selected modification. When Boodmo has several
         catalogue entries with the same label, check each one and mark parts that
         don't appear under all of them as partial fits."""
+        await self.start()
         if getattr(self, "_using_search_fallback", False):
             vehicle = f"{profile.maker or profile.hints.get('make') or ''} {profile.model or profile.hints.get('model') or ''}".strip() or "the requested vehicle"
-            source_url = self.page.url
+            source_url = self.page.url if self.page else None
             tiles = await self._read_tiles()
             if not tiles and ("/part-" in self.page.url):
                 try:
@@ -714,9 +718,10 @@ class BoodmoAdapter:
         seen: dict = {}
         source_url = None
         for occ in range(dupes):
-            if occ or self._selected != (profile.variant, self.page.url):
+            page_url = self.page.url if self.page else ""
+            if occ or self._selected != (profile.variant, page_url):
                 await self._reselect(profile, occ)
-            source_url = source_url or self.page.url
+            source_url = source_url or (self.page.url if self.page else "")
             self.progress(f"Reading {profile.category} listings for {vehicle}"
                           + (f" (catalogue entry {occ + 1} of {dupes})" if dupes > 1 else ""))
             for t in await self._read_tiles():

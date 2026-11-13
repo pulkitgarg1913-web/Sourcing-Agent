@@ -425,10 +425,11 @@ async def start_chat(payload: StartRequest):
                 {"type": "log_event", "message": f"Agent: {text}", "level": "info"},
             )
 
-        # Initialize session with adapters
+        # Initialize session with adapters (force headless on servers without a display)
+        use_headless = payload.headless if os.environ.get("DISPLAY") else True
         session = open_session(
             thread_id,
-            headless=payload.headless,
+            headless=use_headless,
             announce=announce_cb,
             require_confirmation=True,
         )

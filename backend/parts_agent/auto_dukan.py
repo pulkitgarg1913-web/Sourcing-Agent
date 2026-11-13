@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 from typing import Callable, Optional
 from urllib.parse import parse_qs, urljoin, urlparse
@@ -202,6 +203,8 @@ class AutoDukanAdapter:
         base_url: str = BASE,
         record_video_dir: Optional[str] = None,
     ):
+        if not os.environ.get("DISPLAY"):
+            headless = True
         self.headless = headless
         self.progress = progress or (lambda message: None)
         self.base_url = base_url.rstrip("/")
