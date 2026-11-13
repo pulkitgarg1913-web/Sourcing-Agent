@@ -1,6 +1,6 @@
 // API Client and Voice Audio Helpers
 
-const BASE_URL = import.meta.env.VITE_API_URL || "" // relative for vite dev proxy; set VITE_API_URL for production backend URL
+const BASE_URL = (import.meta.env.VITE_API_URL || "").replace(/\/+$/, "") // relative for vite dev proxy; set VITE_API_URL for production backend URL
 
 export async function startChat({ message, threadId, headless = true }) {
   const res = await fetch(`${BASE_URL}/api/chat/start`, {
