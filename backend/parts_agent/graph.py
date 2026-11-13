@@ -527,6 +527,10 @@ async def collect(state: State, config) -> State:
     outcomes = []
     for name, adapter in vendors:
         outcomes.append(await collect_vendor(adapter, profiles[name]))
+        try:
+            await adapter.close()
+        except Exception as e:
+            log.warning("Error closing %s adapter: %s", name, e)
     vendor_outcomes = [asdict(outcome) for outcome in outcomes]
     all_listings = [
         {**listing, "vendor": outcome.vendor}

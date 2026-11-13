@@ -168,8 +168,13 @@ class BoodmoAdapter:
     # ------------------------------------------------------------ lifecycle
 
     async def start(self):
-        if self.page:
-            return
+        if self.page and not self.page.is_closed():
+            try:
+                await self.page.evaluate("1")
+                return
+            except Exception:
+                log.warning("Boodmo page target crashed or unresponsive; restarting...")
+                await self.close()
         self._pw = await async_playwright().start()
         self.browser = await self._pw.chromium.launch(headless=self.headless, args=CHROMIUM_ARGS)
         ctx_opts = {

@@ -243,8 +243,13 @@ class AutoDukanAdapter:
     # ------------------------------------------------------------------ lifecycle
 
     async def start(self):
-        if self.page:
-            return
+        if self.page and not self.page.is_closed():
+            try:
+                await self.page.evaluate("1")
+                return
+            except Exception:
+                log.warning("AutoDukan page target crashed or unresponsive; restarting...")
+                await self.close()
         self._pw = await async_playwright().start()
         self.browser = await self._pw.chromium.launch(headless=self.headless, args=CHROMIUM_ARGS)
         ctx_opts = {
@@ -1229,15 +1234,31 @@ class AutoDukanAdapter:
         return []
 
     async def _page_state(self) -> dict:
-        return await self.page.evaluate("""() => ({
-            title: document.title,
-            url: location.href,
-            text: (document.body?.innerText || '').slice(0, 12000),
-            productLinks: [...document.querySelectorAll('a[href]')]
-                .map(a => ({text: (a.innerText || '').trim(), href: a.href}))
-                .filter(x => x.text && !/^(home|product list|login|faq|blogs)$/i.test(x.text))
-                .slice(0, 80)
-        })""")
+        for attempt in range(2):
+            try:
+                if not self.page or self.page.is_closed():
+                    await self.start()
+                return await self.page.evaluate("""() => ({
+                    title: document.title,
+                    url: location.href,
+                    text: (document.body?.innerText || '').slice(0, 12000),
+                    productLinks: [...document.querySelectorAll('a[href]')]
+                        .map(a => ({text: (a.innerText || '').trim(), href: a.href}))
+                        .filter(x => x.text && !/^(home|product list|login|faq|blogs)$/i.test(x.text))
+                        .slice(0, 80)
+                })""")
+            except Exception as exc:
+                log.warning("AutoDukan _page_state attempt %d failed: %s", attempt + 1, exc)
+                if attempt == 0:
+                    await self.close()
+                    await self.start()
+                    target_url = self.last_search_url or getattr(self, "_category_url", None)
+                    if target_url:
+                        try:
+                            await self._goto(target_url)
+                        except Exception:
+                            pass
+        return {"title": "", "url": "", "text": "", "productLinks": []}
 
     async def _read_detail(self, page: Page, listing: Listing):
         await page.goto(listing.url, wait_until="domcontentloaded", timeout=45000)
@@ -1307,6 +1328,13 @@ class AutoDukanAdapter:
     async def collect(self, profile: VehicleProfile) -> SearchOutcome:
         await self.start()
         vehicle = _vehicle_label(profile)
+
+        target_url = self.last_search_url or getattr(self, "_category_url", None)
+        if target_url and (not self.page.url or self.page.url == "about:blank"):
+            try:
+                await self._goto(target_url)
+            except Exception as e:
+                log.warning("Could not navigate to target_url on collect: %s", e)
 
         # Guard against callers that invoke collect() without first calling advance().
         need = await self.advance(profile)
