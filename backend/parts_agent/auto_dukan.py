@@ -636,15 +636,10 @@ class AutoDukanAdapter:
         if self._using_search_fallback:
             return None
         if not ok:
+            log.warning("AutoDukan vehicle selector unavailable (%s); falling back to direct search", reason)
             self._last_failure = reason
-            return NeedInput(
-                field="variant" if "variant" in reason.lower() else "vehicle",
-                question=(
-                    f"Could not verify { _vehicle_label(profile) }. "
-                    f"{reason} Please confirm the year and variant."
-                ),
-                options=[],
-            )
+            await self._search_fallback(profile)
+            return None
 
         ok, reason = await self._select_category(profile.category)
         if not ok:
@@ -684,8 +679,12 @@ class AutoDukanAdapter:
         return controls[index] if len(controls) > index else None
 
     async def _open_vehicle_picker(self) -> tuple[bool, str]:
-        """Recognize the rendered four-field vehicle form."""
-        await self._wait(350)
+        """Recognize the rendered four-field vehicle form, waiting for client-side hydration."""
+        for attempt in range(8):
+            controls = await self._vehicle_controls()
+            if len(controls) >= 4:
+                return True, ""
+            await self._wait(400)
         controls = await self._vehicle_controls()
         if len(controls) >= 4:
             return True, ""
