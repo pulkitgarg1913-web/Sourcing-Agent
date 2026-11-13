@@ -368,7 +368,10 @@ async def get_suppliers():
 async def session_history(thread_id: str, after: int = 0):
     """Retrieve event history for a session, supporting incremental polling for zero-delay UI sync."""
     all_events = sse_manager.get_history(thread_id)
-    events = all_events[after:] if after < len(all_events) else []
+    # If the client's 'after' pointer is beyond current history (e.g. session was restarted or cleared), reset to 0
+    if after > len(all_events):
+        after = 0
+    events = all_events[after:]
     return {
         "status": "ok",
         "thread_id": thread_id,
