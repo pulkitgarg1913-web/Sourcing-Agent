@@ -33,6 +33,12 @@ UA = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/140.0 Safari/537.36"
 )
+CHROMIUM_ARGS = [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-gpu",
+]
 MAX_PRODUCT_PAGES = 12
 DETAIL_WORKERS = 3
 
@@ -223,7 +229,7 @@ class AutoDukanAdapter:
         if self.page:
             return
         self._pw = await async_playwright().start()
-        self.browser = await self._pw.chromium.launch(headless=self.headless)
+        self.browser = await self._pw.chromium.launch(headless=self.headless, args=CHROMIUM_ARGS)
         ctx_opts = {
             "viewport": {"width": 1440, "height": 1000},
             "user_agent": UA,

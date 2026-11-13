@@ -157,7 +157,10 @@ class TerminalRecorder:
         if self.page:
             return
         self._pw = await async_playwright().start()
-        self.browser = await self._pw.chromium.launch(headless=True)
+        self.browser = await self._pw.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+        )
         ctx_opts = {
             "viewport": {"width": self.width, "height": self.height},
         }

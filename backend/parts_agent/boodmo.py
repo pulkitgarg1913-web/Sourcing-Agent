@@ -29,6 +29,12 @@ log = logging.getLogger(__name__)
 BASE = "https://boodmo.com"
 UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
       "Chrome/140.0 Safari/537.36")
+CHROMIUM_ARGS = [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-gpu",
+]
 CATALOG_FILE = Path(__file__).resolve().parent.parent / "data" / "boodmo_catalog.json"
 if not CATALOG_FILE.exists():
     _alt_cat = Path(__file__).resolve().parent.parent.parent / "data" / "boodmo_catalog.json"
@@ -148,7 +154,7 @@ class BoodmoAdapter:
         if self.page:
             return
         self._pw = await async_playwright().start()
-        self.browser = await self._pw.chromium.launch(headless=self.headless)
+        self.browser = await self._pw.chromium.launch(headless=self.headless, args=CHROMIUM_ARGS)
         ctx_opts = {
             "viewport": {"width": 1366, "height": 900},
             "user_agent": UA,

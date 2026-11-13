@@ -361,6 +361,8 @@ async def session_events(thread_id: str, request: Request):
     queue = sse_manager.subscribe(thread_id)
 
     async def event_generator() -> AsyncGenerator[str, None]:
+        # Send 2KB comment padding to bypass proxy buffering (Cloudflare/Render/Nginx)
+        yield f": {' ' * 2048}\n\n"
         # Send initial confirmation event immediately so frontend connection status turns active
         yield f"data: {json.dumps({'type': 'connection_established', 'thread_id': thread_id, 'timestamp': time.strftime('%H:%M:%S')})}\n\n"
 
