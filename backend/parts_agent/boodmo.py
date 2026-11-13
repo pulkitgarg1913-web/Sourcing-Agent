@@ -35,6 +35,9 @@ CHROMIUM_ARGS = [
     "--disable-setuid-sandbox",
     "--disable-dev-shm-usage",
     "--disable-gpu",
+    "--no-zygote",
+    "--disable-software-rasterizer",
+    "--mute-audio",
 ]
 CATALOG_FILE = Path(__file__).resolve().parent.parent / "data" / "boodmo_catalog.json"
 if not CATALOG_FILE.exists():
@@ -168,6 +171,13 @@ class BoodmoAdapter:
             ctx_opts["record_video_dir"] = self.record_video_dir
             ctx_opts["record_video_size"] = {"width": 1280, "height": 720}
         ctx = await self.browser.new_context(**ctx_opts)
+        try:
+            await ctx.route(
+                "**/*",
+                lambda r: r.abort() if r.request.resource_type in ["image", "media", "font"] else r.continue_(),
+            )
+        except Exception:
+            pass
         self.page = await ctx.new_page()
 
     async def close(self):
@@ -183,6 +193,15 @@ class BoodmoAdapter:
         if self._pw:
             await self._pw.stop()
         self.page = self.browser = self._pw = None
+
+    async def _wait(self, ms: int):
+        try:
+            if self.page and not self.page.is_closed():
+                await self._wait(ms)
+            else:
+                await asyncio.sleep(ms / 1000.0)
+        except Exception:
+            await asyncio.sleep(ms / 1000.0)
 
     async def _goto(self, url: str):
         try:
@@ -349,7 +368,7 @@ class BoodmoAdapter:
                 prev = state["options"]
                 if stable >= 2:
                     return state
-            await self.page.wait_for_timeout(300)
+            await self._wait(300)
             waited += 300
         return state
 
@@ -393,7 +412,7 @@ class BoodmoAdapter:
         before = self.page.url
         await handle.as_element().select_option(index=idx)
         for _ in range(30):
-            await self.page.wait_for_timeout(250)
+            await self._wait(250)
             if self.page.url != before:
                 break
         try:
@@ -418,7 +437,7 @@ class BoodmoAdapter:
         self.progress(f"Falling back to search for '{query}' on Boodmo")
         url = f"{BASE}/search/{urllib.parse.quote_plus(query)}/"
         await self._goto(url)
-        await self.page.wait_for_timeout(2500)
+        await self._wait(2500)
         self._using_search_fallback = True
         self._selected = ("search_fallback", self.page.url)
 
@@ -597,7 +616,7 @@ class BoodmoAdapter:
                                               timeout=12000)
         except Exception:
             pass
-        await self.page.wait_for_timeout(800)
+        await self._wait(800)
         return await self.page.evaluate(
             """() => [...document.querySelectorAll('.products-grid .product-item-tile')].map(t => {
                 const q = s => t.querySelector(s)?.innerText.trim() || null;

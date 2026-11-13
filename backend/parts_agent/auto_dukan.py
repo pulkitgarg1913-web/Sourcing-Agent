@@ -39,6 +39,9 @@ CHROMIUM_ARGS = [
     "--disable-setuid-sandbox",
     "--disable-dev-shm-usage",
     "--disable-gpu",
+    "--no-zygote",
+    "--disable-software-rasterizer",
+    "--mute-audio",
 ]
 MAX_PRODUCT_PAGES = 12
 DETAIL_WORKERS = 3
@@ -244,6 +247,13 @@ class AutoDukanAdapter:
             ctx_opts["record_video_dir"] = self.record_video_dir
             ctx_opts["record_video_size"] = {"width": 1280, "height": 720}
         context = await self.browser.new_context(**ctx_opts)
+        try:
+            await context.route(
+                "**/*",
+                lambda r: r.abort() if r.request.resource_type in ["image", "media", "font"] else r.continue_(),
+            )
+        except Exception:
+            pass
         self.page = await context.new_page()
 
     async def close(self):
@@ -262,6 +272,15 @@ class AutoDukanAdapter:
         self.browser = None
         self._pw = None
 
+    async def _wait(self, ms: int):
+        try:
+            if self.page and not self.page.is_closed():
+                await self._wait(ms)
+            else:
+                await asyncio.sleep(ms / 1000.0)
+        except Exception:
+            await asyncio.sleep(ms / 1000.0)
+
     async def _goto(self, url: str):
         try:
             await self.page.goto(url, wait_until="domcontentloaded", timeout=25000)
@@ -277,8 +296,12 @@ class AutoDukanAdapter:
         except Exception:
             # The storefront may keep analytics or long-polling connections open.
             pass
-        await self.page.wait_for_timeout(500)
-        self.last_search_url = self.page.url
+        try:
+            if self.page and not self.page.is_closed():
+                await self._wait(500)
+        except Exception:
+            await asyncio.sleep(0.5)
+        self.last_search_url = self.page.url if self.page else url
 
     # ------------------------------------------------------------------ contract
 
@@ -606,7 +629,7 @@ class AutoDukanAdapter:
 
     async def _open_vehicle_picker(self) -> tuple[bool, str]:
         """Recognize the rendered four-field vehicle form."""
-        await self.page.wait_for_timeout(350)
+        await self._wait(350)
         controls = await self._vehicle_controls()
         if len(controls) >= 4:
             return True, ""
@@ -637,7 +660,7 @@ class AutoDukanAdapter:
                     break
             if not visible:
                 await control.click(timeout=3000)
-                await self.page.wait_for_timeout(300)
+                await self._wait(300)
             options = []
             for index in range(min(await candidates.count(), 250)):
                 item = candidates.nth(index)
@@ -665,7 +688,7 @@ class AutoDukanAdapter:
             tag = await control.evaluate("el => el.tagName")
             if tag == "SELECT":
                 await control.select_option(label=value)
-                await self.page.wait_for_timeout(500)
+                await self._wait(500)
                 return _same_option(value, await self._field_value(field))
 
             candidates = self.page.get_by_role("option")
@@ -679,7 +702,7 @@ class AutoDukanAdapter:
             target = await matching_visible_option()
             if not target:
                 await control.click(timeout=3000)
-                await self.page.wait_for_timeout(250)
+                await self._wait(250)
                 target = await matching_visible_option()
             if not target:
                 log.info("AutoDukan option %r disappeared before selecting %s", value, field)
@@ -692,19 +715,19 @@ class AutoDukanAdapter:
             try:
                 await target.click(timeout=1500)
             except Exception:
-                await self.page.wait_for_timeout(200)
+                await self._wait(200)
                 if _same_option(value, await self._field_value(field)):
                     return True
                 try:
                     await target.click(timeout=1500, force=True)
                 except Exception:
-                    await self.page.wait_for_timeout(200)
+                    await self._wait(200)
                     if _same_option(value, await self._field_value(field)):
                         return True
                     # MUI's role=option is the rendered control, so invoking its
                     # click event is a final fallback when overlay hit testing blocks Playwright.
                     await target.evaluate("el => el.click()")
-            await self.page.wait_for_timeout(500)
+            await self._wait(500)
             selected_value = await self._field_value(field)
             if _same_option(value, selected_value):
                 return True
@@ -735,7 +758,7 @@ class AutoDukanAdapter:
             options, control = await self._read_vehicle_options(field)
             if options or attempt == 8:
                 break
-            await self.page.wait_for_timeout(350)
+            await self._wait(350)
 
         requested = _clean(getattr(profile, attr) or "")
         hint_key = {"brand": "make", "model": "model", "year": "year"}.get(field)
@@ -834,7 +857,7 @@ class AutoDukanAdapter:
                 return True, "", need
             if self._using_search_fallback:
                 return True, "fallback to search bar", None
-            await self.page.wait_for_timeout(350)
+            await self._wait(350)
 
         before_submit = self.page.url
         submit_control = None
@@ -852,14 +875,14 @@ class AutoDukanAdapter:
 
         try:
             await submit_control.click(timeout=5000)
-            await self.page.wait_for_timeout(1200)
+            await self._wait(1200)
             for _ in range(12):
                 parsed = urlparse(self.page.url)
                 qs = parse_qs(parsed.query)
                 if "car_model_id" in qs:
                     self._car_model_id = qs["car_model_id"][0]
                     break
-                await self.page.wait_for_timeout(250)
+                await self._wait(250)
         except Exception as exc:
             return False, f"Vehicle confirmation failed ({type(exc).__name__}).", None
 
@@ -981,7 +1004,7 @@ class AutoDukanAdapter:
             target_url = f"{self.base_url}/products-list/{slug}?car_model_id={self._car_model_id}"
             try:
                 await self._goto(target_url)
-                await self.page.wait_for_timeout(1500)
+                await self._wait(1500)
                 body = _norm(await self.page.locator("body").inner_text())
                 if "product not found" in body or "/products-list" in self.page.url:
                     self._category_confirmed = True
@@ -1227,7 +1250,7 @@ class AutoDukanAdapter:
         if getattr(self, "_using_search_fallback", False):
             vehicle = f"{profile.maker or profile.hints.get('make') or ''} {profile.model or profile.hints.get('model') or ''}".strip() or "the requested vehicle"
             self.progress(f"Reading AutoDukan search bar results for {vehicle}")
-            await self.page.wait_for_timeout(900)
+            await self._wait(900)
             cards = await self._read_cards()
             listings: list[Listing] = []
             seen: set[str] = set()
@@ -1259,7 +1282,7 @@ class AutoDukanAdapter:
             )
 
         self.progress(f"Reading AutoDukan {profile.category} listings for {vehicle}")
-        await self.page.wait_for_timeout(900)
+        await self._wait(900)
         state = await self._page_state()
         body_norm = _norm(state.get("text", ""))
 
