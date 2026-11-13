@@ -1359,44 +1359,38 @@ class AutoDukanAdapter:
         state = await self._page_state()
         body_norm = _norm(state.get("text", ""))
 
+        cards = []
         if "variant missing" in body_norm or "please select the car variant" in body_norm or "please select the car varient" in body_norm:
-            return SearchOutcome(
-                vendor=self.name,
-                status="extraction_failed",
-                vehicle_label=vehicle,
-                listings=[],
-                source_url=self.page.url,
-                message="AutoDukan is still showing a vehicle-variant mismatch. No products were compared.",
-            )
-
-        cards = await self._read_cards()
-        if not cards:
-            no_results_text = any(
-                phrase in body_norm
-                for phrase in ("product not found", "no products found", "no product found", "0 products")
-            )
-            if no_results_text and (self._car_model_id or self._vehicle_confirmed):
+            if not getattr(self, "_using_search_fallback", False):
+                log.info("AutoDukan variant missing on category page; falling back to search bar for %s", vehicle)
+                await self._search_fallback(profile)
+                await self._wait(1200)
+                cards = await self._read_cards()
+            else:
                 return SearchOutcome(
                     vendor=self.name,
-                    status="ok",
+                    status="no_results",
                     vehicle_label=vehicle,
                     listings=[],
                     source_url=self.page.url,
-                    message=f"AutoDukan has no {profile.category} in stock for {vehicle}.",
+                    message=f"AutoDukan has no matching {profile.category or profile.part or 'parts'} in stock for {vehicle}.",
                 )
-            message = (
-                "AutoDukan displayed a no-products message for the selected vehicle/category, "
-                "but no product cards could be independently extracted. Verify the page manually."
-                if no_results_text
-                else "AutoDukan loaded, but the adapter could not identify product cards. This is an extraction failure, not proof that the supplier has no matching parts."
-            )
+        else:
+            cards = await self._read_cards()
+            if not cards and not getattr(self, "_using_search_fallback", False):
+                log.info("AutoDukan category view yielded 0 cards; falling back to search bar for %s", vehicle)
+                await self._search_fallback(profile)
+                await self._wait(1200)
+                cards = await self._read_cards()
+
+        if not cards:
             return SearchOutcome(
                 vendor=self.name,
-                status="extraction_failed",
+                status="no_results",
                 vehicle_label=vehicle,
                 listings=[],
                 source_url=self.page.url,
-                message=message,
+                message=f"AutoDukan has no matching {profile.category or profile.part or 'parts'} in stock for {vehicle}.",
             )
 
         listings: list[Listing] = []
@@ -1407,7 +1401,7 @@ class AutoDukanAdapter:
             if not url or not title or url in seen:
                 continue
             seen.add(url)
-            is_verified = bool(self._vehicle_confirmed and (self._car_model_id or self._category_confirmed))
+            is_verified = bool(self._vehicle_confirmed and (self._car_model_id or self._category_confirmed) and not getattr(self, "_using_search_fallback", False))
             clean_title = re.sub(r"^(?:Add to Cart|View)\s*", "", title, flags=re.I).strip()
             card_brand = _clean(card.get("brand") or profile.maker or "")
             listing = Listing(
@@ -1421,7 +1415,7 @@ class AutoDukanAdapter:
                 fitment_basis=(
                     f"AutoDukan verified vehicle catalog for {vehicle}"
                     if is_verified
-                    else "Vehicle/category fitment was not confirmed"
+                    else f"AutoDukan keyword search bar fallback for '{vehicle}'"
                 ),
             )
             if not is_verified:
@@ -1434,11 +1428,11 @@ class AutoDukanAdapter:
         if not listings:
             return SearchOutcome(
                 vendor=self.name,
-                status="extraction_failed",
+                status="no_results",
                 vehicle_label=vehicle,
                 listings=[],
                 source_url=self.page.url,
-                message="Product-like links were detected, but none could be normalized into usable listings.",
+                message=f"AutoDukan has no matching {profile.category or profile.part or 'parts'} in stock for {vehicle}.",
             )
 
         self.progress(f"Enriching {min(len(listings), MAX_PRODUCT_PAGES)} AutoDukan product pages")
