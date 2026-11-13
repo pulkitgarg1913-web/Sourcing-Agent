@@ -1,6 +1,11 @@
 // API Client and Voice Audio Helpers
 
-const BASE_URL = (import.meta.env.VITE_API_URL || "").replace(/\/+$/, "") // relative for vite dev proxy; set VITE_API_URL for production backend URL
+let rawBase = (import.meta.env.VITE_API_URL || "").replace(/\/+$/, "")
+// If pointing to Railway, route through relative /api proxy (which vercel.json rewrites to the local tunnel)
+if (rawBase.includes("railway.app")) {
+  rawBase = ""
+}
+const BASE_URL = rawBase
 
 export async function startChat({ message, threadId, headless = true }) {
   const res = await fetch(`${BASE_URL}/api/chat/start`, {
