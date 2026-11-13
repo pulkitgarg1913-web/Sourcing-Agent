@@ -98,9 +98,11 @@ class SSEManager:
                 self._queues.pop(thread_id, None)
 
     def publish(self, thread_id: str, event_data: Dict[str, Any]):
+        curr_hist = self._history.setdefault(thread_id, [])
+        event_data.setdefault("id", f"{thread_id}_{len(curr_hist)}_{int(time.time()*1000)}")
         event_data.setdefault("timestamp", time.strftime("%H:%M:%S"))
         # Save to history for late subscribers
-        self._history.setdefault(thread_id, []).append(event_data)
+        curr_hist.append(event_data)
         if thread_id in self._queues:
             for q in self._queues[thread_id]:
                 q.put_nowait(event_data)
@@ -362,14 +364,27 @@ async def get_suppliers():
     ]
 
 
+@app.get("/api/session/{thread_id}/history")
+async def session_history(thread_id: str, after: int = 0):
+    """Retrieve event history for a session, supporting incremental polling for zero-delay UI sync."""
+    all_events = sse_manager.get_history(thread_id)
+    events = all_events[after:] if after < len(all_events) else []
+    return {
+        "status": "ok",
+        "thread_id": thread_id,
+        "events": events,
+        "total": len(all_events),
+    }
+
+
 @app.get("/api/session/{thread_id}/events")
 async def session_events(thread_id: str, request: Request):
     """Server-Sent Events endpoint streaming real-time logs, progress, and results."""
     queue = sse_manager.subscribe(thread_id)
 
     async def event_generator() -> AsyncGenerator[str, None]:
-        # Send 2KB comment padding to bypass proxy buffering (Cloudflare/Render/Nginx)
-        yield f": {' ' * 2048}\n\n"
+        # Send 8KB comment padding to force intermediate proxies (Cloudflare/Vercel/Nginx) to flush stream immediately
+        yield f": {' ' * 8192}\n\n"
         # Send initial confirmation event immediately so frontend connection status turns active
         yield f"data: {json.dumps({'type': 'connection_established', 'thread_id': thread_id, 'timestamp': time.strftime('%H:%M:%S')})}\n\n"
 
@@ -383,10 +398,10 @@ async def session_events(thread_id: str, request: Request):
                 if await request.is_disconnected():
                     break
                 try:
-                    event = await asyncio.wait_for(queue.get(), timeout=20.0)
+                    event = await asyncio.wait_for(queue.get(), timeout=15.0)
                     yield f"data: {json.dumps(event)}\n\n"
                 except asyncio.TimeoutError:
-                    # Keep-alive ping
+                    # Keep-alive ping to maintain proxy connection
                     yield f": ping\n\n"
         finally:
             sse_manager.unsubscribe(thread_id, queue)
@@ -395,7 +410,7 @@ async def session_events(thread_id: str, request: Request):
         event_generator(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-cache, no-transform",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         },
@@ -405,6 +420,7 @@ async def session_events(thread_id: str, request: Request):
 @app.post("/api/chat/start")
 async def start_chat(payload: StartRequest):
     thread_id = payload.thread_id or str(uuid.uuid4())
+    log.info("Starting search session %s for request: '%s'", thread_id, payload.message)
     lock = get_lock(thread_id)
 
     async with lock:
@@ -528,8 +544,10 @@ async def start_chat(payload: StartRequest):
 async def reply_chat(payload: ReplyRequest):
     thread_id = payload.thread_id
     if thread_id not in CONVERSATIONS:
+        log.warning("Session %s not found for reply: '%s'", thread_id, payload.answer)
         raise HTTPException(status_code=404, detail="Conversation session not found")
 
+    log.info("Received reply for session %s: '%s'", thread_id, payload.answer)
     lock = get_lock(thread_id)
     async with lock:
         convo = CONVERSATIONS[thread_id]
@@ -541,6 +559,7 @@ async def reply_chat(payload: ReplyRequest):
 
         async def run_reply():
             try:
+                log.info("Advancing conversation graph for session %s with answer '%s'...", thread_id, payload.answer)
                 q = await convo.reply(payload.answer)
                 state = convo.state
                 profile_dict = state.get("profile") or {}
@@ -555,6 +574,7 @@ async def reply_chat(payload: ReplyRequest):
                 )
 
                 if q:
+                    log.info("Session %s asks next question: %s", thread_id, q.get("question"))
                     sse_manager.publish(
                         thread_id,
                         {
@@ -564,6 +584,7 @@ async def reply_chat(payload: ReplyRequest):
                         },
                     )
                 else:
+                    log.info("Session %s sourcing finished successfully", thread_id)
                     # Collection and presentation completed!
                     save_run(thread_id, state)
                     outcome = state.get("outcome") or {}

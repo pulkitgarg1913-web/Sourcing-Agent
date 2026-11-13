@@ -10,6 +10,7 @@ import {
   replyChat,
   resetSession,
   subscribeToEvents,
+  getSessionHistory,
 } from "./services/api"
 
 const INITIAL_SUPPLIERS = [
@@ -64,35 +65,20 @@ export default function App() {
   const [isSearching, setIsSearching] = useState(false)
 
   const unsubscribeRef = useRef(null)
-
-  // Establish SSE Connection
-  useEffect(() => {
-    if (unsubscribeRef.current) {
-      unsubscribeRef.current()
-    }
-
-    const unsub = subscribeToEvents(
-      threadId,
-      (event) => {
-        setConnected(true)
-        handleIncomingEvent(event)
-      },
-      (err) => {
-        setConnected(false)
-      },
-      () => {
-        setConnected(true)
-      }
-    )
-
-    unsubscribeRef.current = unsub
-    return () => {
-      if (unsub) unsub()
-    }
-  }, [threadId])
+  const seenEventIdsRef = useRef(new Set())
+  const historyIndexRef = useRef(0)
 
   // Process Real-Time SSE Events
   const handleIncomingEvent = useCallback((event) => {
+    if (!event) return
+    const eventId =
+      event.id ||
+      `${event.type}_${event.timestamp || ""}_${event.message || (event.pending && event.pending.question) || (event.profile && event.profile.part) || ""}`
+    if (seenEventIdsRef.current.has(eventId)) {
+      return
+    }
+    seenEventIdsRef.current.add(eventId)
+
     const timeStr =
       event.timestamp ||
       new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
@@ -256,6 +242,55 @@ export default function App() {
     }
   }, [])
 
+  // Establish SSE Connection
+  useEffect(() => {
+    if (unsubscribeRef.current) {
+      unsubscribeRef.current()
+    }
+
+    const unsub = subscribeToEvents(
+      threadId,
+      (event) => {
+        setConnected(true)
+        handleIncomingEvent(event)
+      },
+      (err) => {
+        setConnected(false)
+      },
+      () => {
+        setConnected(true)
+      }
+    )
+
+    unsubscribeRef.current = unsub
+    return () => {
+      if (unsub) unsub()
+    }
+  }, [threadId, handleIncomingEvent])
+
+  // Real-time Event Poll Fallback: guarantees events are received even if a proxy buffers SSE chunks
+  useEffect(() => {
+    historyIndexRef.current = 0
+    seenEventIdsRef.current.clear()
+
+    const interval = setInterval(async () => {
+      try {
+        const data = await getSessionHistory(threadId, historyIndexRef.current)
+        if (data && data.events && data.events.length > 0) {
+          historyIndexRef.current += data.events.length
+          setConnected(true)
+          for (const ev of data.events) {
+            handleIncomingEvent(ev)
+          }
+        }
+      } catch (err) {
+        // silent fallback
+      }
+    }, 1200)
+
+    return () => clearInterval(interval)
+  }, [threadId, handleIncomingEvent])
+
   // Send initial message
   const handleSendMessage = async (text) => {
     const timeStr = new Date().toLocaleTimeString([], {
@@ -335,6 +370,8 @@ export default function App() {
   // Reset Session
   const handleReset = async () => {
     await resetSession(threadId)
+    seenEventIdsRef.current.clear()
+    historyIndexRef.current = 0
     const newId = crypto.randomUUID()
     setThreadId(newId)
     setMessages([

@@ -1,9 +1,18 @@
 // API Client and Voice Audio Helpers
 
 let rawBase = (import.meta.env.VITE_API_URL || "").replace(/\/+$/, "")
-// If pointing to Railway, route through relative /api proxy (which vercel.json rewrites to the local tunnel)
-if (rawBase.includes("railway.app")) {
-  rawBase = ""
+// If running in browser:
+// 1. On localhost or 127.0.0.1, always use relative path "" (Vite dev proxy forwards directly to local 127.0.0.1:8000)
+// 2. On Vercel (or when pointing to railway), always use relative path "" (vercel.json rewrites /api/* to local tunnel)
+if (typeof window !== "undefined") {
+  if (
+    window.location.hostname === "localhost" ||
+    window.location.hostname === "127.0.0.1" ||
+    window.location.hostname.includes("vercel.app") ||
+    rawBase.includes("railway.app")
+  ) {
+    rawBase = ""
+  }
 }
 const BASE_URL = rawBase
 
@@ -47,6 +56,16 @@ export async function resetSession(threadId) {
     body: JSON.stringify({ thread_id: threadId }),
   })
   return res.json().catch(() => ({}))
+}
+
+export async function getSessionHistory(threadId, after = 0) {
+  try {
+    const res = await fetch(`${BASE_URL}/api/session/${threadId}/history?after=${after}`)
+    if (!res.ok) return { events: [], total: 0 }
+    return await res.json()
+  } catch (err) {
+    return { events: [], total: 0 }
+  }
 }
 
 export async function uploadAudioForTranscription(audioBlob, context = "") {
