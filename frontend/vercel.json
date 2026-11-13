@@ -1,6 +1,9 @@
 {
-  "$schema": "https://openapi.vercel.sh/vercel.json",
   "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "https://cheers-aircraft-presents-twist.trycloudflare.com/api/:path*"
+    },
     {
       "source": "/(.*)",
       "destination": "/index.html"
