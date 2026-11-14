@@ -446,14 +446,37 @@ class BoodmoAdapter:
             }""", [SELECTS[key], label, occurrence])
         if idx < 0:
             raise RuntimeError(f"Option {label!r} not found in {key} dropdown")
-        handle = await self.page.evaluate_handle(
-            """(pat) => {
-                const re = new RegExp(pat, 'i');
-                return [...document.querySelectorAll('select')]
-                    .find(s => s.options.length && re.test(s.options[0].text.trim()));
-            }""", SELECTS[key])
         before = self.page.url
-        await handle.as_element().select_option(index=idx)
+        try:
+            selected = await self.page.evaluate("""([pat, idx]) => {
+                const re = new RegExp(pat, 'i');
+                const s = [...document.querySelectorAll('select')]
+                    .find(s => s.options.length && re.test(s.options[0].text.trim()));
+                if (s && idx >= 0 && idx < s.options.length) {
+                    s.selectedIndex = idx;
+                    s.dispatchEvent(new Event('change', { bubbles: true }));
+                    s.dispatchEvent(new Event('input', { bubbles: true }));
+                    return true;
+                }
+                return false;
+            }""", [SELECTS[key], idx])
+            if not selected:
+                handle = await self.page.evaluate_handle(
+                    """(pat) => {
+                        const re = new RegExp(pat, 'i');
+                        return [...document.querySelectorAll('select')]
+                            .find(s => s.options.length && re.test(s.options[0].text.trim()));
+                    }""", SELECTS[key])
+                await handle.as_element().select_option(index=idx)
+        except Exception as exc:
+            log.warning("Boodmo select option %s failed (%s)", label, exc)
+            handle = await self.page.evaluate_handle(
+                """(pat) => {
+                    const re = new RegExp(pat, 'i');
+                    return [...document.querySelectorAll('select')]
+                        .find(s => s.options.length && re.test(s.options[0].text.trim()));
+                }""", SELECTS[key])
+            await handle.as_element().select_option(index=idx)
         if key in ("modification", "variant"):
             for _ in range(25):
                 await self._wait(200)
@@ -797,20 +820,46 @@ class BoodmoAdapter:
         vehicle = f"{profile.maker} {profile.model} {profile.year} {profile.variant}"
         seen: dict = {}
         source_url = None
-        for occ in range(dupes):
-            page_url = self.page.url if self.page else ""
-            if occ or self._selected != (profile.variant, page_url):
-                await self._reselect(profile, occ)
-            source_url = source_url or (self.page.url if self.page else "")
-            self.progress(f"Reading {profile.category} listings for {vehicle}"
-                          + (f" (catalogue entry {occ + 1} of {dupes})" if dupes > 1 else ""))
-            for t in await self._read_tiles():
-                if not t.get("href"):
-                    continue
-                key = t["href"]
-                if key not in seen:
-                    seen[key] = {"tile": t, "hits": 0}
-                seen[key]["hits"] += 1
+        try:
+            for occ in range(dupes):
+                page_url = self.page.url if self.page else ""
+                if occ or self._selected != (profile.variant, page_url):
+                    await self._reselect(profile, occ)
+                source_url = source_url or (self.page.url if self.page else "")
+                self.progress(f"Reading {profile.category} listings for {vehicle}"
+                              + (f" (catalogue entry {occ + 1} of {dupes})" if dupes > 1 else ""))
+                for t in await self._read_tiles():
+                    if not t.get("href"):
+                        continue
+                    key = t["href"]
+                    if key not in seen:
+                        seen[key] = {"tile": t, "hits": 0}
+                    seen[key]["hits"] += 1
+        except Exception as exc:
+            log.warning("Boodmo catalogue walk failed (%s); falling back to direct search", exc)
+            await self._search_fallback(profile)
+            await self._wait(1200)
+            tiles = await self._read_tiles()
+            listings = []
+            for t in tiles:
+                number, item_id = _part_number(t.get("href") or "", t.get("number") or "")
+                listing = Listing(
+                    title=(t.get("title") or "").strip(), brand=t.get("brand") or profile.maker or "", part_number=number,
+                    price=_price(t.get("price")), mrp=_price(t.get("mrp")), url=BASE + (t.get("href") or ""),
+                    fitment="unverified",
+                    fitment_basis=f"Boodmo keyword search bar fallback for '{vehicle}'",
+                )
+                if "..." in number:
+                    listing.notes.append(f"Boodmo masks the full part number; item id {item_id}")
+                listings.append(listing)
+            return SearchOutcome(
+                vendor=self.name,
+                status="ok" if listings else "no_results",
+                vehicle_label=vehicle,
+                listings=listings,
+                source_url=self.page.url if self.page else None,
+                message=f"Boodmo search bar found {len(listings)} listings for {vehicle}." if listings else f"Boodmo search bar found no listings for {vehicle}."
+            )
 
         listings: list[Listing] = []
         for href, rec in seen.items():
