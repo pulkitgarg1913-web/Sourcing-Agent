@@ -249,29 +249,35 @@ async def navigate(state: State, config) -> State:
             return None
 
     vendors = list(session.adapters.items())
-    needs = await asyncio.gather(*(
-        advance_vendor(name, adapter) for name, adapter in vendors
-    ))
-    # Each website advances concurrently. Ask one supplier's question at a
-    # time, carrying its identity so answers update only that supplier profile.
-    # If Boodmo has resolved its variant, pass it to AutoDukan immediately
-    # so AutoDukan can select its variant without waiting or needing an extra mechanic turn.
-    boodmo_p = profiles.get("boodmo")
-    if boodmo_p and boodmo_p.variant and "autodukan" in session.adapters:
-        autodukan_p = profiles.get("autodukan")
-        if autodukan_p and not autodukan_p.variant:
-            autodukan_p.hints["boodmo_variant"] = boodmo_p.variant
-            for i, (vendor, adapter) in enumerate(vendors):
-                if vendor == "autodukan":
-                    needs[i] = await advance_vendor("autodukan", adapter)
+    needs = {}
 
+    # Advance Boodmo first so it can lead vehicle identification without CPU contention
+    if "boodmo" in session.adapters:
+        needs["boodmo"] = await advance_vendor("boodmo", session.adapters["boodmo"])
+        boodmo_p = profiles.get("boodmo")
+        if boodmo_p and boodmo_p.variant and "autodukan" in session.adapters:
+            autodukan_p = profiles.get("autodukan")
+            if autodukan_p:
+                autodukan_p.hints["boodmo_variant"] = boodmo_p.variant
+
+    boodmo_need = needs.get("boodmo")
+    for name, adapter in vendors:
+        if name == "boodmo":
+            continue
+        # If Boodmo is actively clarifying core vehicle identity (maker, model, year),
+        # defer other vendor advances until the vehicle is known
+        if boodmo_need and boodmo_need.field in ("maker", "model", "year"):
+            continue
+        needs[name] = await advance_vendor(name, adapter)
+
+    boodmo_p = profiles.get("boodmo")
     valid_needs = []
-    boodmo_has_active_need = any(v == "boodmo" and n is not None for (v, _), n in zip(vendors, needs))
-    for (vendor, _adapter), vendor_need in zip(vendors, needs):
+    boodmo_has_active_need = bool(boodmo_need)
+    for vendor, _adapter in vendors:
+        vendor_need = needs.get(vendor)
         if not vendor_need:
             continue
-        # If Boodmo is present in the session and actively has a need, let Boodmo lead the variant questions.
-        # AutoDukan will match Boodmo's resolved variant automatically once finalized.
+        # If Boodmo is present in the session and actively has a need, let Boodmo lead variant questions.
         if vendor == "autodukan" and vendor_need.field in ("variant", "variant_attr"):
             if "boodmo" in session.adapters and boodmo_has_active_need:
                 continue

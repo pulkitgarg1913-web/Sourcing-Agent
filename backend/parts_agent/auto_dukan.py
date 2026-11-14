@@ -609,6 +609,7 @@ class AutoDukanAdapter:
         query = " ".join(t for t in terms if t).strip()
         self.progress(f"Falling back to search for '{query}' on AutoDukan")
         url = f"{self.base_url}/products-list?search={urllib.parse.quote_plus(query)}"
+        self.last_search_url = url
         await self._goto(url)
         self._using_search_fallback = True
         self._vehicle_confirmed = True
@@ -666,12 +667,23 @@ class AutoDukanAdapter:
         # Keep this DOM locator while MUI's option menu is open. Its modal marks
         # the underlying form aria-hidden, which removes get_by_role() matches
         # even though the combobox remains present and usable after selection.
-        locator = self.page.locator('[role="combobox"][aria-haspopup="listbox"]')
+        locator = self.page.locator('[role="combobox"][aria-haspopup="listbox"], [role="combobox"]')
         controls = []
         try:
-            for index in range(await locator.count()):
+            count = await locator.count()
+            for index in range(count):
                 control = locator.nth(index)
                 if await control.is_visible():
+                    # Filter out search bar if it happens to match
+                    tag = await control.evaluate("el => el.tagName")
+                    if tag == "INPUT":
+                        continue
+                    is_search = await control.evaluate("""el => {
+                        const txt = (el.innerText || el.getAttribute('placeholder') || '').toLowerCase();
+                        return el.querySelector('input[type="search"], input[placeholder*="search" i]') !== null || /search for parts|enter part/i.test(txt);
+                    }""")
+                    if is_search:
+                        continue
                     controls.append(control)
         except Exception:
             return []
@@ -685,11 +697,19 @@ class AutoDukanAdapter:
 
     async def _open_vehicle_picker(self) -> tuple[bool, str]:
         """Recognize the rendered four-field vehicle form, waiting for client-side hydration."""
-        for attempt in range(8):
+        try:
+            await self.page.wait_for_selector(
+                '[role="combobox"][aria-haspopup="listbox"], [role="combobox"], .MuiSelect-select',
+                timeout=6000
+            )
+        except Exception:
+            pass
+
+        for attempt in range(6):
             controls = await self._vehicle_controls()
             if len(controls) >= 4:
                 return True, ""
-            await self._wait(400)
+            await self._wait(350)
         controls = await self._vehicle_controls()
         if len(controls) >= 4:
             return True, ""
@@ -712,23 +732,49 @@ class AutoDukanAdapter:
                 raw = await control.locator("option").all_text_contents()
                 return self._usable_vehicle_options(field, [_clean(value) for value in raw]), control
 
-            candidates = self.page.get_by_role("option")
-            visible = False
-            for index in range(min(await candidates.count(), 250)):
-                if await candidates.nth(index).is_visible():
-                    visible = True
-                    break
-            if not visible:
-                await control.click(timeout=3000)
+            # Check if options are already open/rendered in DOM
+            options = await self.page.evaluate("""() => {
+                const items = document.querySelectorAll('[role="option"], li.MuiMenuItem-root, .MuiAutocomplete-option');
+                const res = [];
+                for (const el of items) {
+                    if (el.offsetParent !== null) {
+                        const txt = (el.innerText || el.textContent || '').trim();
+                        if (txt) res.push(txt);
+                    }
+                }
+                return res;
+            }""")
+
+            if not options:
+                # Open combobox using DOM events to bypass overlay/actionability hangs
+                try:
+                    await control.evaluate("""el => {
+                        el.scrollIntoView({ block: 'nearest' });
+                        el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+                        el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+                        el.click();
+                    }""")
+                except Exception:
+                    try:
+                        await control.click(timeout=1000, force=True)
+                    except Exception:
+                        pass
                 await self._wait(300)
-            options = []
-            for index in range(min(await candidates.count(), 250)):
-                item = candidates.nth(index)
-                if await item.is_visible():
-                    label = _clean(await item.inner_text())
-                    if label:
-                        options.append(label)
-            return self._usable_vehicle_options(field, options), control
+
+                # Collect newly opened options
+                options = await self.page.evaluate("""() => {
+                    const items = document.querySelectorAll('[role="option"], li.MuiMenuItem-root, .MuiAutocomplete-option');
+                    const res = [];
+                    for (const el of items) {
+                        if (el.offsetParent !== null) {
+                            const txt = (el.innerText || el.textContent || '').trim();
+                            if (txt) res.push(txt);
+                        }
+                    }
+                    return res;
+                }""")
+
+            return self._usable_vehicle_options(field, [_clean(v) for v in options if v]), control
         except Exception as exc:
             log.info("AutoDukan could not read %s options: %s", field, type(exc).__name__)
             return [], control
@@ -748,48 +794,81 @@ class AutoDukanAdapter:
             tag = await control.evaluate("el => el.tagName")
             if tag == "SELECT":
                 await control.select_option(label=value)
-                await self._wait(500)
+                await self._wait(400)
                 return _same_option(value, await self._field_value(field))
 
-            candidates = self.page.get_by_role("option")
-            async def matching_visible_option():
-                for index in range(min(await candidates.count(), 250)):
-                    option = candidates.nth(index)
-                    if await option.is_visible() and _same_option(value, _clean(await option.inner_text())):
-                        return option
-                return None
+            # Select option via DOM dispatch (fastest & handles MUI popovers reliably)
+            selected = await self.page.evaluate("""(targetValue) => {
+                function norm(s) {
+                    return (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+                }
+                const targetNorm = norm(targetValue);
+                const items = document.querySelectorAll('[role="option"], li.MuiMenuItem-root, .MuiAutocomplete-option');
+                for (const el of items) {
+                    const text = (el.innerText || el.textContent || '').trim();
+                    if (norm(text) === targetNorm || text.toLowerCase() === targetValue.toLowerCase()) {
+                        el.scrollIntoView({ block: 'nearest' });
+                        el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+                        el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+                        el.click();
+                        return true;
+                    }
+                }
+                return false;
+            }""", value)
 
-            target = await matching_visible_option()
-            if not target:
-                await control.click(timeout=3000)
-                await self._wait(250)
-                target = await matching_visible_option()
-            if not target:
-                log.info("AutoDukan option %r disappeared before selecting %s", value, field)
-                return False
-
-            try:
-                await target.scroll_into_view_if_needed(timeout=1500)
-            except Exception:
-                pass
-            try:
-                await target.click(timeout=1500)
-            except Exception:
-                await self._wait(200)
-                if _same_option(value, await self._field_value(field)):
-                    return True
+            if not selected:
+                # Open dropdown if closed
                 try:
-                    await target.click(timeout=1500, force=True)
+                    await control.evaluate("""el => {
+                        el.scrollIntoView({ block: 'nearest' });
+                        el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+                        el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+                        el.click();
+                    }""")
                 except Exception:
-                    await self._wait(200)
-                    if _same_option(value, await self._field_value(field)):
-                        return True
-                    # MUI's role=option is the rendered control, so invoking its
-                    # click event is a final fallback when overlay hit testing blocks Playwright.
-                    await target.evaluate("el => el.click()")
-            await self._wait(500)
+                    try:
+                        await control.click(timeout=1000, force=True)
+                    except Exception:
+                        pass
+                await self._wait(250)
+
+                selected = await self.page.evaluate("""(targetValue) => {
+                    function norm(s) {
+                        return (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+                    }
+                    const targetNorm = norm(targetValue);
+                    const items = document.querySelectorAll('[role="option"], li.MuiMenuItem-root, .MuiAutocomplete-option');
+                    for (const el of items) {
+                        const text = (el.innerText || el.textContent || '').trim();
+                        if (norm(text) === targetNorm || text.toLowerCase() === targetValue.toLowerCase()) {
+                            el.scrollIntoView({ block: 'nearest' });
+                            el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+                            el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+                            el.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }""", value)
+
+            if not selected:
+                # Playwright click fallback
+                target = self.page.locator('[role="option"], li.MuiMenuItem-root').filter(
+                    has_text=re.compile(rf"^\s*{re.escape(value)}\s*$", re.I)
+                ).first
+                if await target.count() > 0:
+                    try:
+                        await target.click(timeout=1000, force=True)
+                        selected = True
+                    except Exception:
+                        pass
+
+            await self._wait(400)
             selected_value = await self._field_value(field)
             if _same_option(value, selected_value):
+                return True
+            if _norm(value) in _norm(selected_value) or _norm(selected_value) in _norm(value):
                 return True
             log.info("AutoDukan %s option click did not change the control: wanted=%r actual=%r",
                      field, value, selected_value)
@@ -814,11 +893,11 @@ class AutoDukanAdapter:
         options: list[str] = []
         control = None
         # AutoDukan reloads dependent options after each selection.
-        for attempt in range(9):
+        for attempt in range(4):
             options, control = await self._read_vehicle_options(field)
-            if options or attempt == 8:
+            if options or attempt == 3:
                 break
-            await self._wait(350)
+            await self._wait(300)
 
         requested = _clean(getattr(profile, attr) or "")
         hint_key = {"brand": "make", "model": "model", "year": "year"}.get(field)
@@ -1193,7 +1272,14 @@ class AutoDukanAdapter:
                     let foundCard = false;
                     let card = a;
                     for (let i = 0; i < 6; i++) {
-                        if (card.parentElement && (card.innerText.includes('Add to Cart') || card.innerText.includes('Part No:') || card.classList.contains('product-card'))) {
+                        if (card.parentElement && (
+                            card.innerText.includes('Add to Cart') ||
+                            card.innerText.includes('Add To Cart') ||
+                            card.innerText.includes('Part No') ||
+                            card.innerText.includes('SKU') ||
+                            card.classList.contains('product-card') ||
+                            /(?:₹|Rs\.?)\s*[\d,]+/i.test(card.innerText)
+                        )) {
                             foundCard = true;
                             break;
                         }
