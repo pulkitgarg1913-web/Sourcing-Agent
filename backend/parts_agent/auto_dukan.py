@@ -54,7 +54,7 @@ CHROMIUM_ARGS = [
     "--force-color-profile=srgb",
     "--js-flags=--max-old-space-size=128",
 ]
-MAX_PRODUCT_PAGES = 6 if not os.environ.get("DISPLAY") else 12
+MAX_PRODUCT_PAGES = 3 if not os.environ.get("DISPLAY") else 12
 DETAIL_WORKERS = 1 if not os.environ.get("DISPLAY") else 2
 
 
@@ -895,6 +895,10 @@ class AutoDukanAdapter:
             note = "Several variants match the stated vehicle details."
         log.info("AutoDukan needs a mechanic selection for %s: requested=%r choices=%r url=%s",
                  field, requested or hint or None, display_options[:40], self.page.url)
+        if not display_options:
+            log.warning("AutoDukan vehicle field %s has no visible options; falling back to search bar", field)
+            await self._search_fallback(profile)
+            return None
         return NeedInput(field=attr, question=titles[field], options=display_options, note=note)
 
     async def _select_vehicle(
@@ -1261,9 +1265,9 @@ class AutoDukanAdapter:
         return {"title": "", "url": "", "text": "", "productLinks": []}
 
     async def _read_detail(self, page: Page, listing: Listing):
-        await page.goto(listing.url, wait_until="domcontentloaded", timeout=45000)
+        await page.goto(listing.url, wait_until="domcontentloaded", timeout=18000)
         try:
-            await page.wait_for_load_state("networkidle", timeout=8000)
+            await page.wait_for_selector("h1, [itemprop='price'], [itemprop='name']", timeout=2500)
         except Exception:
             pass
         data = await page.evaluate(r"""() => {

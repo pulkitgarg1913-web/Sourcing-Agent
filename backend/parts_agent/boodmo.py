@@ -93,7 +93,7 @@ SELECTS = {
     "variant": r"^Choose Modification",
 }
 
-ENRICH_LIMIT = 4 if not os.environ.get("DISPLAY") else 12      # product pages to open for seller/stock details
+ENRICH_LIMIT = 2 if not os.environ.get("DISPLAY") else 12      # product pages to open for seller/stock details
 ENRICH_TABS = 1 if not os.environ.get("DISPLAY") else 2        # opened concurrently
 
 # Words that turn a part class into an accessory of the requested part,
@@ -454,14 +454,14 @@ class BoodmoAdapter:
             }""", SELECTS[key])
         before = self.page.url
         await handle.as_element().select_option(index=idx)
-        for _ in range(30):
+        if key in ("modification", "variant"):
+            for _ in range(25):
+                await self._wait(200)
+                if self.page.url != before:
+                    break
+        else:
+            # Child dropdowns are updated asynchronously via fast AJAX; do not stall in 7.5s url loop
             await self._wait(250)
-            if self.page.url != before:
-                break
-        try:
-            await self.page.wait_for_load_state("networkidle", timeout=10000)
-        except Exception:
-            pass
 
     async def _ensure_category_page(self):
         if not self.page.url.startswith(BASE + self.category_href):
@@ -480,7 +480,7 @@ class BoodmoAdapter:
         self.progress(f"Falling back to search for '{query}' on Boodmo")
         url = f"{BASE}/search/{urllib.parse.quote_plus(query)}/"
         await self._goto(url)
-        await self._wait(2500)
+        await self._wait(800)
         self._using_search_fallback = True
         self._selected = ("search_fallback", self.page.url)
 
@@ -508,7 +508,9 @@ class BoodmoAdapter:
         # ---- maker
         state = await self._options("maker", profile)
         if not state:
-            raise RuntimeError("Vehicle selector not found on the category page")
+            log.warning("Boodmo vehicle selector not found on category page; falling back to keyword search")
+            await self._search_fallback(profile)
+            return None
         makers = list(dict.fromkeys(state["options"]))
         if not profile.maker or profile.maker not in makers:
             need = self._match_or_ask("maker", profile.maker or profile.hints.get("make"), makers,
@@ -524,7 +526,9 @@ class BoodmoAdapter:
         state = await self._options("model", profile)
         models = list(dict.fromkeys(state["options"])) if state else []
         if not models:
-            raise RuntimeError(f"Boodmo shows no model lines for {profile.maker}")
+            log.warning("Boodmo shows no model lines for %s; falling back to keyword search", profile.maker)
+            await self._search_fallback(profile)
+            return None
         if not profile.model or profile.model not in models:
             candidate_model = profile.model or profile.hints.get("model")
             if candidate_model:
@@ -698,13 +702,12 @@ class BoodmoAdapter:
                 listing.notes.append(f"product page navigation failed: {exc}")
                 return
         try:
-            await page.wait_for_selector(".part-info-spec", timeout=8000)
-            await page.wait_for_selector(".part-offers__list__item, .part-offers", timeout=4000)
+            await page.wait_for_selector(".part-info-spec, .part-offers__list__item, .part-offers", timeout=3500)
         except Exception:
             if not await page.query_selector(".part-info-spec"):
                 listing.notes.append("product page did not load; stock not checked")
                 return
-        await asyncio.sleep(0.4)
+        await asyncio.sleep(0.2)
         info = await page.evaluate(
             """() => {
                 const spec = {};
