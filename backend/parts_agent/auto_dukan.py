@@ -333,7 +333,7 @@ class AutoDukanAdapter:
                     raise
         try:
             if self.page and not self.page.is_closed():
-                await self.page.wait_for_load_state("networkidle", timeout=4000)
+                await self.page.wait_for_load_state("domcontentloaded", timeout=4000)
         except Exception:
             pass
         await asyncio.sleep(0.4)

@@ -700,6 +700,8 @@ def _after_navigate(state: State) -> str:
 def _after_interpret(state: State) -> str:
     if state.get("cancelled"):
         return "present"
+    if state.get("confirmed"):
+        return "collect"
     return "interpret" if state.get("pending") else "navigate"
 
 
@@ -713,7 +715,7 @@ def build_graph():
     g.add_edge(START, "understand")
     g.add_conditional_edges("understand", _after_understand, ["interpret", "navigate"])
     g.add_conditional_edges("navigate", _after_navigate, ["interpret", "collect", "present"])
-    g.add_conditional_edges("interpret", _after_interpret, ["interpret", "navigate", "present"])
+    g.add_conditional_edges("interpret", _after_interpret, ["interpret", "navigate", "collect", "present"])
     g.add_edge("collect", "present")
     g.add_edge("present", END)
     return g.compile(checkpointer=InMemorySaver(), interrupt_before=["interpret"])

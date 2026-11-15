@@ -255,7 +255,7 @@ class BoodmoAdapter:
                     raise
         try:
             if self.page and not self.page.is_closed():
-                await self.page.wait_for_load_state("networkidle", timeout=4000)
+                await self.page.wait_for_load_state("domcontentloaded", timeout=4000)
         except Exception:
             pass
 
@@ -398,7 +398,7 @@ class BoodmoAdapter:
                 return {options: opts, selected: s.selectedIndex > 0 ? s.options[s.selectedIndex].text.trim() : null};
             }""", SELECTS[key])
 
-    async def _wait_options(self, key: str, timeout_ms: int = 9000) -> Optional[dict]:
+    async def _wait_options(self, key: str, timeout_ms: int = 3500) -> Optional[dict]:
         """Wait until the dropdown has options and they've stopped changing. The
         list refreshes asynchronously after an upstream choice, and reading it
         too early returns the unfiltered list (e.g. every year's variants)."""
@@ -416,21 +416,13 @@ class BoodmoAdapter:
         return state
 
     async def _options(self, key: str, profile: VehicleProfile) -> Optional[dict]:
-        """Like _wait_options, but if the dropdown doesn't show up (slow page),
-        reload once and restore the upstream selections."""
-        state = await self._wait_options(key)
+        """Fetch options from dropdown, falling back directly to keyword search if unavailable."""
+        state = await self._wait_options(key, timeout_ms=3500)
         if state and state["options"]:
             return state
-        self.progress("Page was slow, reloading")
-        await self._goto(self.page.url)
-        for up in ("maker", "model", "year"):
-            if up == key:
-                break
-            value = getattr(profile, up)
-            st = await self._wait_options(up, timeout_ms=15000)
-            if value and st and st["selected"] != value:
-                await self._choose(up, value)
-        return await self._wait_options(key, timeout_ms=15000)
+        log.warning("Boodmo dropdown %s not responsive on category page; falling back to direct search", key)
+        await self._search_fallback(profile)
+        return None
 
     async def _choose(self, key: str, label: str, occurrence: int = 0):
         """Select an option by its visible label (labels can repeat, so by index)."""
