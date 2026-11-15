@@ -1546,7 +1546,7 @@ class AutoDukanAdapter:
                 vendor=self.name,
                 status="ok" if listings else "no_results",
                 vehicle_label=vehicle,
-                listings=listings,
+                listings=[l.to_dict() if hasattr(l, "to_dict") else l for l in listings],
                 source_url=self.page.url,
                 message=f"AutoDukan search bar found {len(listings)} listings for {vehicle}." if listings else f"AutoDukan search bar found no listings for {vehicle}."
             )

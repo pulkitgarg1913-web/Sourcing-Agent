@@ -822,7 +822,7 @@ class BoodmoAdapter:
                 vendor=self.name,
                 status="ok" if listings else "no_results",
                 vehicle_label=vehicle,
-                listings=listings,
+                listings=[l.to_dict() if hasattr(l, "to_dict") else l for l in listings],
                 source_url=source_url,
                 message=f"Boodmo search bar found {len(listings)} listings for {vehicle}." if listings else f"Boodmo search bar found no listings for {vehicle}."
             )
@@ -867,7 +867,7 @@ class BoodmoAdapter:
                 vendor=self.name,
                 status="ok" if listings else "no_results",
                 vehicle_label=vehicle,
-                listings=listings,
+                listings=[l.to_dict() if hasattr(l, "to_dict") else l for l in listings],
                 source_url=self.page.url if self.page else None,
                 message=f"Boodmo search bar found {len(listings)} listings for {vehicle}." if listings else f"Boodmo search bar found no listings for {vehicle}."
             )

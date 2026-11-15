@@ -582,7 +582,7 @@ async def collect(state: State, config) -> State:
             log.warning("Error closing %s adapter: %s", name, e)
     vendor_outcomes = [asdict(outcome) for outcome in outcomes]
     all_listings = [
-        {**listing, "vendor": outcome.vendor}
+        {**(listing.to_dict() if hasattr(listing, "to_dict") else dict(listing)), "vendor": outcome.vendor}
         for outcome in outcomes
         for listing in outcome.listings
     ]
