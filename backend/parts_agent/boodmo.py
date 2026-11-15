@@ -500,11 +500,14 @@ class BoodmoAdapter:
 
     async def _search_fallback(self, profile: VehicleProfile) -> None:
         import urllib.parse
-        make = profile.maker or profile.hints.get("make") or ""
-        model = profile.model or profile.hints.get("model") or ""
-        part = profile.part or profile.category or ""
-        terms = [make, model, part]
-        query = " ".join(t for t in terms if t).strip()
+        make = (profile.maker or profile.hints.get("make") or "").strip()
+        model = (profile.model or profile.hints.get("model") or "").strip()
+        part = (profile.part or profile.category or "").strip()
+        clean_model = model
+        if make and model.lower().startswith(make.lower()):
+            clean_model = model[len(make):].strip()
+        terms = [t for t in [make, clean_model, part] if t]
+        query = " ".join(terms).strip()
         self.progress(f"Falling back to search for '{query}' on Boodmo")
         url = f"{BASE}/search/{urllib.parse.quote_plus(query)}/"
         await self._goto(url)
@@ -938,6 +941,66 @@ class BoodmoAdapter:
                             break
                 except Exception as exc:
                     log.warning("Could not check alternate Boodmo category '%s': %s", alt_cat, exc)
+
+        if not listings and not getattr(self, "_using_search_fallback", False):
+            self.progress(f"No listings under Boodmo catalogue for {profile.category}; searching Boodmo for '{vehicle}'")
+            await self._search_fallback(profile)
+            await self._wait(1200)
+            tiles = await self._read_tiles()
+
+            clean_model = (profile.model or profile.hints.get("model") or "").strip()
+            make = (profile.maker or profile.hints.get("make") or "").strip()
+            if make and clean_model.lower().startswith(make.lower()):
+                clean_model = clean_model[len(make):].strip()
+            part = (profile.part or profile.category or "").strip()
+
+            candidate_queries = []
+            if clean_model and part:
+                candidate_queries.append(f"{clean_model} {part}")
+            if clean_model and profile.category and profile.category != part:
+                candidate_queries.append(f"{clean_model} {profile.category}")
+            if part and part != "part":
+                candidate_queries.append(part)
+
+            import urllib.parse
+            for cand_query in candidate_queries:
+                if tiles:
+                    break
+                self.progress(f"Refining search to '{cand_query}' on Boodmo")
+                url = f"{BASE}/search/{urllib.parse.quote_plus(cand_query)}/"
+                await self._goto(url)
+                await self._wait(1200)
+                tiles = await self._read_tiles()
+
+            if not tiles and ("/part-" in (self.page.url if self.page else "")):
+                try:
+                    title = await self.page.locator("h1").inner_text()
+                    price_loc = self.page.locator(".product-price__current, [class*='price__current']").first
+                    price_text = await price_loc.inner_text() if await price_loc.count() else None
+                    tiles = [{
+                        "title": title.strip(),
+                        "price": price_text,
+                        "mrp": None,
+                        "brand": profile.maker or "",
+                        "number": "",
+                        "href": self.page.url.replace(BASE, "")
+                    }]
+                except Exception:
+                    pass
+
+            for t in tiles:
+                number, item_id = _part_number(t.get("href") or "", t.get("number") or "")
+                listing = Listing(
+                    title=(t.get("title") or "").strip(), brand=t.get("brand") or profile.maker or "", part_number=number,
+                    price=_price(t.get("price")), mrp=_price(t.get("mrp")), url=BASE + (t.get("href") or ""),
+                    fitment="unverified",
+                    fitment_basis=f"Boodmo keyword search bar fallback for '{vehicle}'",
+                )
+                if "..." in number:
+                    listing.notes.append(f"Boodmo masks the full part number; item id {item_id}")
+                listings.append(listing)
+            if listings:
+                source_url = self.page.url if self.page else source_url
 
         if not listings:
             checked_str = ", ".join(checked_categories)

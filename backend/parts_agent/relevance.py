@@ -72,6 +72,20 @@ SYNONYM_FAMILIES = {
     ],
     "clutch set": ["clutch set", "clutch kit", "clutch plate", "clutch disc", "clutch assembly"],
     "clutch": ["clutch", "clutch plate", "clutch disc", "clutch set", "clutch kit", "clutch assembly"],
+    "cooling coil": [
+        "cooling coil", "cooling coils", "evaporator", "evaporator coil", "ac cooling coil",
+        "ac coil", "evaporator assy", "evaporator unit", "cooling unit"
+    ],
+    "evaporator": [
+        "evaporator", "cooling coil", "cooling coils", "evaporator coil", "ac cooling coil",
+        "ac coil", "evaporator assy", "evaporator unit", "cooling unit"
+    ],
+    "transmission": [
+        "transmission", "gearbox", "gear box", "manual transmission", "trans assy"
+    ],
+    "gearbox": [
+        "gearbox", "gear box", "transmission", "manual transmission", "trans assy"
+    ],
 }
 
 
