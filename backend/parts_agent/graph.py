@@ -72,6 +72,16 @@ def open_session(thread_id: str, *, headless: bool = True,
     return s
 
 
+def reap_zombie_processes():
+    try:
+        while True:
+            pid, _ = os.waitpid(-1, os.WNOHANG)
+            if pid <= 0:
+                break
+    except Exception:
+        pass
+
+
 async def close_session(thread_id: str):
     s = SESSIONS.pop(thread_id, None)
     if s:
@@ -81,6 +91,21 @@ async def close_session(thread_id: str):
         for adapter, result in zip(adapters, results):
             if isinstance(result, Exception):
                 log.warning("Could not close %s browser session: %s", adapter.name, result)
+    reap_zombie_processes()
+    import gc
+    gc.collect()
+
+
+async def close_all_stale_sessions(active_thread_id: Optional[str] = None):
+    stale_threads = [tid for tid in list(SESSIONS.keys()) if tid != active_thread_id]
+    for tid in stale_threads:
+        try:
+            await close_session(tid)
+        except Exception as e:
+            log.warning("Error closing stale session %s: %s", tid, e)
+    reap_zombie_processes()
+    import gc
+    gc.collect()
 
 
 def _session(config) -> Session:

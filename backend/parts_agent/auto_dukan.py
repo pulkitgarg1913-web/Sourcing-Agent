@@ -52,7 +52,9 @@ CHROMIUM_ARGS = [
     "--disable-ipc-flooding-protection",
     "--disable-renderer-backgrounding",
     "--force-color-profile=srgb",
-    "--js-flags=--max-old-space-size=128",
+    "--disk-cache-size=1048576",
+    "--media-cache-size=1048576",
+    "--js-flags=--max-old-space-size=96",
 ]
 MAX_PRODUCT_PAGES = 3 if not os.environ.get("DISPLAY") else 12
 DETAIL_WORKERS = 1 if not os.environ.get("DISPLAY") else 2
@@ -285,14 +287,23 @@ class AutoDukanAdapter:
                     self.video_path = await self.page.video.path()
             except Exception:
                 pass
-            await self.page.close()
+            try:
+                await self.page.close()
+            except Exception:
+                pass
+            self.page = None
         if self.browser:
-            await self.browser.close()
+            try:
+                await self.browser.close()
+            except Exception:
+                pass
+            self.browser = None
         if self._pw:
-            await self._pw.stop()
-        self.page = None
-        self.browser = None
-        self._pw = None
+            try:
+                await self._pw.stop()
+            except Exception:
+                pass
+            self._pw = None
 
     async def _wait(self, ms: int):
         await asyncio.sleep(ms / 1000.0)

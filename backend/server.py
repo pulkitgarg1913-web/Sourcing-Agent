@@ -38,6 +38,7 @@ from parts_agent.graph import (
     SESSIONS,
     Session,
     close_session,
+    close_all_stale_sessions,
     open_session,
     save_run,
     _profiles_from_state,
@@ -401,7 +402,7 @@ async def session_events(thread_id: str, request: Request):
                 if await request.is_disconnected():
                     break
                 try:
-                    event = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    event = await asyncio.wait_for(queue.get(), timeout=5.0)
                     yield f"data: {json.dumps(event)}\n\n"
                 except asyncio.TimeoutError:
                     # Keep-alive ping to maintain proxy connection
@@ -427,6 +428,8 @@ async def start_chat(payload: StartRequest):
     lock = get_lock(thread_id)
 
     async with lock:
+        # Close all stale sessions to prevent Chromium memory accumulation in container
+        await close_all_stale_sessions(thread_id)
         # Close any previous session on this thread
         await close_session(thread_id)
         # Clear past event history but preserve active subscriber queues for this thread!
@@ -539,6 +542,11 @@ async def start_chat(payload: StartRequest):
                             "profile": profile_dict,
                         },
                     )
+                    # Sourcing completed; release browser memory immediately
+                    try:
+                        await close_session(thread_id)
+                    except Exception:
+                        pass
             except Exception as e:
                 log.exception("Error in convo.start")
                 sse_manager.publish(
@@ -633,6 +641,11 @@ async def reply_chat(payload: ReplyRequest):
                             "profile": profile_dict,
                         },
                     )
+                    # Sourcing completed; release browser memory immediately
+                    try:
+                        await close_session(thread_id)
+                    except Exception:
+                        pass
             except Exception as e:
                 log.exception("Error in convo.reply")
                 sse_manager.publish(
@@ -718,6 +731,7 @@ async def reset_session(payload: Dict[str, str]):
         CONVERSATIONS.pop(thread_id, None)
         sse_manager.clear(thread_id)
         SESSION_LOCKS.pop(thread_id, None)
+    await close_all_stale_sessions()
     return {"status": "ok", "message": "Session reset"}
 
 
