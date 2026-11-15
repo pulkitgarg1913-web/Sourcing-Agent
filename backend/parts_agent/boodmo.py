@@ -791,7 +791,32 @@ class BoodmoAdapter:
             vehicle = f"{profile.maker or profile.hints.get('make') or ''} {profile.model or profile.hints.get('model') or ''}".strip() or "the requested vehicle"
             source_url = self.page.url if self.page else None
             tiles = await self._read_tiles()
-            if not tiles and ("/part-" in self.page.url):
+            if not tiles:
+                clean_model = (profile.model or profile.hints.get("model") or "").strip()
+                make = (profile.maker or profile.hints.get("make") or "").strip()
+                if make and clean_model.lower().startswith(make.lower()):
+                    clean_model = clean_model[len(make):].strip()
+                part = (profile.part or profile.category or "").strip()
+
+                candidate_queries = []
+                if clean_model and part:
+                    candidate_queries.append(f"{clean_model} {part}")
+                if clean_model and profile.category and profile.category != part:
+                    candidate_queries.append(f"{clean_model} {profile.category}")
+                if part and part != "part":
+                    candidate_queries.append(part)
+
+                import urllib.parse
+                for cand_query in candidate_queries:
+                    if tiles:
+                        break
+                    self.progress(f"Refining search to '{cand_query}' on Boodmo")
+                    url = f"{BASE}/search/{urllib.parse.quote_plus(cand_query)}/"
+                    await self._goto(url)
+                    await self._wait(1200)
+                    tiles = await self._read_tiles()
+
+            if not tiles and ("/part-" in (self.page.url if self.page else "")):
                 try:
                     title = await self.page.locator("h1").inner_text()
                     price_loc = self.page.locator(".product-price__current, [class*='price__current']").first
