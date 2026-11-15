@@ -864,6 +864,17 @@ class AutoDukanAdapter:
                     except Exception:
                         pass
 
+            if selected:
+                for _ in range(3):
+                    selected_value = await self._field_value(field)
+                    if _same_option(value, selected_value) or _norm(value) in _norm(selected_value) or _norm(selected_value) in _norm(value):
+                        return True
+                    await self._wait(200)
+                # If the DOM option was clicked, assume success unless control clearly shows something completely different
+                if not selected_value or "select" in _norm(selected_value):
+                    log.info("AutoDukan %s option was clicked successfully in DOM; proceeding with %r", field, value)
+                    return True
+
             await self._wait(400)
             selected_value = await self._field_value(field)
             if _same_option(value, selected_value):
@@ -959,8 +970,16 @@ class AutoDukanAdapter:
             "year": f"Which year is the {profile.maker or ''} {profile.model or ''}?",
             "variant": f"Which version or trim of the {profile.maker or ''} {profile.model or ''} ({profile.year or ''}) is it?",
         }
-        if field == "model" and (requested or hint) and not matches:
-            log.info("AutoDukan model '%s' not in dropdown choices; falling back to search bar", requested or hint)
+        # If the user or session already provided a value for this field, do not prompt them again.
+        # Silently fall back to AutoDukan's direct search bar.
+        if field in ("brand", "model", "year") and (requested or hint):
+            log.info("AutoDukan %s '%s' could not be selected in dropdown (matches=%s); falling back to direct search bar",
+                     field, requested or hint, matches)
+            await self._search_fallback(profile)
+            return None
+
+        if field == "variant" and (requested or hint or boodmo_variant):
+            log.info("AutoDukan variant could not be matched/selected in dropdown; falling back to direct search bar")
             await self._search_fallback(profile)
             return None
 

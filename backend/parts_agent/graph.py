@@ -156,6 +156,12 @@ def _profiles_from_state(state: State) -> dict[str, VehicleProfile]:
         for k, v in shared_hints.items():
             if k not in p.hints or not p.hints[k]:
                 p.hints[k] = v
+        if not p.maker and (boodmo_p.maker or shared_hints.get("make")):
+            p.maker = boodmo_p.maker or shared_hints.get("make")
+        if not p.model and (boodmo_p.model or shared_hints.get("model")):
+            p.model = boodmo_p.model or shared_hints.get("model")
+        if not p.year and (boodmo_p.year or shared_hints.get("year")):
+            p.year = boodmo_p.year or shared_hints.get("year")
         if boodmo_p.variant:
             p.hints["boodmo_variant"] = boodmo_p.variant
         if not p.part and boodmo_p.part:
@@ -271,16 +277,28 @@ async def navigate(state: State, config) -> State:
         needs[name] = await advance_vendor(name, adapter)
 
     boodmo_p = profiles.get("boodmo")
+    autodukan_p = profiles.get("autodukan")
     valid_needs = []
     boodmo_has_active_need = bool(boodmo_need)
-    for vendor, _adapter in vendors:
+    for vendor, adapter in vendors:
         vendor_need = needs.get(vendor)
         if not vendor_need:
             continue
-        # If Boodmo is present in the session and actively has a need, let Boodmo lead variant questions.
-        if vendor == "autodukan" and vendor_need.field in ("variant", "variant_attr"):
-            if "boodmo" in session.adapters and boodmo_has_active_need:
+        # AutoDukan must NEVER ask the mechanic for maker, model, or year if the vehicle is already known
+        if vendor == "autodukan":
+            known_make = (boodmo_p and (boodmo_p.maker or boodmo_p.hints.get("make"))) or (autodukan_p and (autodukan_p.maker or autodukan_p.hints.get("make")))
+            known_model = (boodmo_p and (boodmo_p.model or boodmo_p.hints.get("model"))) or (autodukan_p and (autodukan_p.model or autodukan_p.hints.get("model")))
+            if vendor_need.field in ("maker", "model", "year") and (known_make or known_model):
+                log.info("AutoDukan asked for %s when vehicle is known (%s %s); falling back to direct search",
+                         vendor_need.field, known_make, known_model)
+                await adapter._search_fallback(autodukan_p or profiles["autodukan"])
                 continue
+            # If Boodmo is present in the session and actively has a need, or Boodmo already has a variant, let Boodmo lead
+            if vendor_need.field in ("variant", "variant_attr"):
+                if "boodmo" in session.adapters and (boodmo_has_active_need or (boodmo_p and boodmo_p.variant)):
+                    log.info("AutoDukan asked for variant when Boodmo is leading; falling back to direct search")
+                    await adapter._search_fallback(autodukan_p or profiles["autodukan"])
+                    continue
         valid_needs.append(_need_for_vendor(vendor_need, vendor))
 
     need = valid_needs[0] if valid_needs else None
@@ -477,16 +495,16 @@ def _apply(profile: VehicleProfile, need: dict, value: str, config,
                     sibling.hints.pop("model", None)
                     for key in ("trim", "engine", "fuel", "transmission"):
                         sibling.hints.pop(key, None)
-                sibling.variant_filters = {}
-                sibling.variant = None
-                sibling.model = sibling.year = None
+                    sibling.variant_filters = {}
+                    sibling.variant = None
+                    sibling.model = sibling.year = None
             elif f == "model":
-                sibling.variant_filters = {}
-                sibling.variant = None
-                sibling.model = sibling.year = None
                 if changed_hint:
                     for key in ("trim", "engine", "fuel", "transmission"):
                         sibling.hints.pop(key, None)
+                    sibling.variant_filters = {}
+                    sibling.variant = None
+                    sibling.year = None
             elif f == "year":
                 if changed_hint:
                     sibling.year = None

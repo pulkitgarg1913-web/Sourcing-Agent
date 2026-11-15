@@ -665,9 +665,12 @@ class BoodmoAdapter:
                 setattr(profile, field, options[i])
                 return None
             close = llm.closest(hint, options)
-            return NeedInput(field=field, options=close,
-                             note=f"I couldn't find '{hint}' on Boodmo.",
-                             question=f"Did you mean {', '.join(close[:-1])} or {close[-1]}?")
+            from difflib import SequenceMatcher
+            best_sim = SequenceMatcher(None, llm._norm(hint), llm._norm(close[0])).ratio() if close else 0.0
+            if close and best_sim >= 0.45:
+                return NeedInput(field=field, options=close if len(options) <= 4 else options,
+                                 note=f"I couldn't find '{hint}' on Boodmo.",
+                                 question=f"Did you mean {', '.join(close[:-1])} or {close[-1]}?")
         return NeedInput(field=field, options=options, question=question)
 
     # ------------------------------------------------------------ listings
