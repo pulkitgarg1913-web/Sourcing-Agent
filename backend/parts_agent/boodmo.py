@@ -232,7 +232,7 @@ class BoodmoAdapter:
                 break
             except Exception as exc:
                 err_msg = str(exc).lower()
-                is_crash = "crashed" in err_msg or "closed" in err_msg
+                is_crash = "crashed" in err_msg or "closed" in err_msg or "aborted" in err_msg or "detached" in err_msg
                 log.warning("Boodmo navigation attempt %d failed for %s (%s)", attempt + 1, url, exc)
                 if is_crash and self.page:
                     try:
