@@ -585,19 +585,24 @@ async def collect(state: State, config) -> State:
             requested_part=profile.part or ""
         )
         ranked = relevance.rank_listings(all_listings)
-        summary = relevance.summarize_findings(
-            ranked,
-            f"{profile.maker or ''} {profile.model or ''} {profile.year or ''} {profile.variant or ''}".strip(),
-            profile.part or ""
-        )
-        return {
-            "outcome": {
-                "vendor_outcomes": vendor_outcomes,
-                "listings": ranked,
-                "is_cached": True,
-            },
-            "summary": summary,
-        }
+        for vo in vendor_outcomes:
+            vo_listings = vo.get("listings") or []
+            vo["listings"] = relevance.rank_listings(
+                relevance.classify_listings(vo_listings, query=state.get("request", ""), requested_part=profile.part or ""),
+                price_order="asc"
+            )
+
+        return _profile_updates(profiles) | {"outcome": {
+            "status": "ok",
+            "vehicle_label": " ".join(x for x in (
+                profile.maker, profile.model, profile.year, profile.variant,
+            ) if x),
+            "listings": ranked,
+            "vendor_outcomes": vendor_outcomes,
+            "source_url": None,
+            "message": "Instantly retrieved from verified supplier cache.",
+            "is_cached": True,
+        }}
 
     async def collect_vendor(adapter, vendor_profile: VehicleProfile):
         try:
