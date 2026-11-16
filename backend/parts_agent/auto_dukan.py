@@ -368,11 +368,15 @@ class AutoDukanAdapter:
             (r"\b(tail\s*lights?|tail\s*lamps?|taillights?|taillamps?|rear\s*lamps?|rear\s*lights?)\b", "TAILLIGHT"),
             (r"\b(head\s*lights?|head\s*lamps?|headlights?|headlamps?)\b", "HEADLIGHT"),
             (r"\b(fog\s*lights?|fog\s*lamps?)\b", "FOG LAMP"),
+            (r"\b(indicators?|turn\s*signals?|side\s*indicators?)\b", "INDICATOR"),
+            (r"\b(side\s*mirrors?|outside\s*mirrors?|orvm|door\s*mirrors?|rear\s*view\s*mirrors?|mirror\s*glass|mirrors?)\b", "OUTSIDE MIRROR"),
+            (r"\b(front\s*bumpers?|rear\s*bumpers?|bumpers?)\b", "BUMPER"),
             (r"\b(oil\s*filters?)\b", "OIL FILTER"),
             (r"\b(air\s*filters?)\b", "AIR FILTER"),
             (r"\b(cabin\s*filters?|ac\s*filters?)\b", "CABIN FILTER"),
             (r"\b(fuel\s*filters?)\b", "FUEL FILTER"),
             (r"\b(brake\s*pads?|disc\s*pads?)\b", "BRAKE PADS"),
+            (r"\b(brake\s*shoes?|break\s*shoes?|drum\s*brakes?)\b", "BRAKE SHOES"),
             (r"\balloy\s*wheels?\b", "Alloy Wheels"),
             (r"\b(clutch|clutch\s*plate|clutch\s*set|clutch\s*kit)\b", "CLUTCH SET"),
             (r"\b(transmission\s*bracket|transmission\s*mounting|gearbox\s*mount(?:ing)?|gear\s*mounting)\b", "TRANSMISSION MOUNTING"),
@@ -384,6 +388,7 @@ class AutoDukanAdapter:
             (r"\b(batter(?:y|ies))\b", "BATTERY"),
             (r"\b(alternator)\b", "ALTERNATOR"),
             (r"\b(shock\s*absorber|strut)\b", "SHOCK ABSORBER"),
+            (r"\b(control\s*arms?|lower\s*arms?|wishbone)\b", "CONTROL ARM"),
             (r"\b(water\s*pump)\b", "WATER PUMP"),
             (r"\b(timing\s*belt|fan\s*belt|serpentine\s*belt|drive\s*belt)\b", "BELTS"),
             (r"\b(cooling\s*coil|cooling\s*coils|evaporator|evaporators|ac\s*cooling\s*coil)\b", "EVAPORATOR"),
@@ -528,6 +533,16 @@ class AutoDukanAdapter:
             return ["FILTERS", "OIL FILTER"]
         if "brakepad" in normalized or "brake" in normalized or "disc" in normalized:
             return ["BRAKE SYSTEM", "BRAKE PADS"]
+        if "shoe" in normalized:
+            return ["BRAKE SYSTEM", "BRAKE SHOES"]
+        if "mirror" in normalized or "orvm" in normalized:
+            return ["BODY", "OUTSIDE MIRROR"]
+        if "bumper" in normalized:
+            return ["BODY", "BUMPER"]
+        if "controlarm" in normalized or "lowerarm" in normalized:
+            return ["SUSPENSION", "CONTROL ARM"]
+        if "indicator" in normalized:
+            return ["LIGHTING", "INDICATOR"]
         if "wheel" in normalized or "rim" in normalized or "alloy" in normalized:
             return ["WHEELS & TYRE", "Rim"]
         if "clutch" in normalized:
@@ -581,6 +596,16 @@ class AutoDukanAdapter:
             return "clutch-set"
         if "brake" in norm or "pad" in norm or ("disc" in norm and "brake" in norm):
             return "brake-pads"
+        if "shoe" in norm:
+            return "brake-shoes"
+        if "mirror" in norm or "orvm" in norm:
+            return "outside-mirror"
+        if "bumper" in norm:
+            return "bumper"
+        if "indicator" in norm:
+            return "indicator"
+        if "controlarm" in norm or "lowerarm" in norm:
+            return "control-arm"
         if "shock" in norm or "strut" in norm:
             return "shock-absorber"
         if "wiper" in norm or "blade" in norm or "windscreen" in norm:
