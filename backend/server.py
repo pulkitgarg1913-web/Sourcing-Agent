@@ -421,6 +421,40 @@ async def session_events(thread_id: str, request: Request):
     )
 
 
+def publish_completed_outcomes(thread_id: str, state: dict):
+    """Publish adapter_completed for each vendor outcome so frontend cards and product results update immediately."""
+    outcome = state.get("outcome") or {}
+    vendor_outcomes = outcome.get("vendor_outcomes") or []
+    for vo in vendor_outcomes:
+        v_name = vo.get("vendor", "")
+        s_title = "Boodmo" if v_name == "boodmo" else "AutoDukan" if v_name == "autodukan" else v_name.title()
+        vo_listings = vo.get("listings") or []
+        listings_dict = [l.to_dict() if hasattr(l, "to_dict") else dict(l) for l in vo_listings]
+        source_url = vo.get("source_url") or ("https://boodmo.com" if v_name == "boodmo" else "https://autodukan.com")
+        sse_manager.publish(
+            thread_id,
+            {
+                "type": "adapter_completed",
+                "supplier": s_title,
+                "vendor": v_name,
+                "status": "Completed",
+                "products_found": len(listings_dict),
+                "results": listings_dict,
+                "source_url": source_url,
+                "message": vo.get("message", f"{s_title} search completed."),
+                "elapsed_seconds": 0.1,
+            },
+        )
+        sse_manager.publish(
+            thread_id,
+            {
+                "type": "log_event",
+                "message": f"{s_title} extracted {len(listings_dict)} listings",
+                "level": "success",
+            },
+        )
+
+
 @app.post("/api/chat/start")
 async def start_chat(payload: StartRequest):
     thread_id = payload.thread_id or str(uuid.uuid4())
@@ -532,6 +566,7 @@ async def start_chat(payload: StartRequest):
                     # No questions needed; collection and presentation finished!
                     save_run(thread_id, state)
                     outcome = state.get("outcome") or {}
+                    publish_completed_outcomes(thread_id, state)
                     summary = state.get("summary") or "Search completed."
                     sse_manager.publish(
                         thread_id,
@@ -631,6 +666,7 @@ async def reply_chat(payload: ReplyRequest):
                     # Collection and presentation completed!
                     save_run(thread_id, state)
                     outcome = state.get("outcome") or {}
+                    publish_completed_outcomes(thread_id, state)
                     summary = state.get("summary") or "Search completed."
                     sse_manager.publish(
                         thread_id,

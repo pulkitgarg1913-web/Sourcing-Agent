@@ -247,6 +247,32 @@ export default function App() {
             },
           ])
         }
+        if (event.outcome?.listings && event.outcome.listings.length > 0) {
+          setListings((prevListings) => {
+            const existingUrls = new Set(prevListings.map((l) => l.url))
+            const newItems = event.outcome.listings.filter((l) => !existingUrls.has(l.url))
+            return [...prevListings, ...newItems]
+          })
+        }
+        if (event.outcome?.vendor_outcomes && event.outcome.vendor_outcomes.length > 0) {
+          setSuppliers((prev) =>
+            prev.map((s) => {
+              const vo = event.outcome.vendor_outcomes.find((v) => v.vendor === s.vendor)
+              if (vo) {
+                const count = (vo.listings || []).length
+                return {
+                  ...s,
+                  status: "Completed",
+                  progress: 100,
+                  currentOperation: `Completed: ${count} parts found`,
+                  productsExtracted: count,
+                  elapsedSeconds: 0.1,
+                }
+              }
+              return s
+            })
+          )
+        }
         setPendingQuestion(null)
         setOverallStatus("Completed")
         setIsSearching(false)
