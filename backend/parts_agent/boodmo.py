@@ -95,8 +95,8 @@ SELECTS = {
     "variant": r"^Choose Modification",
 }
 
-ENRICH_LIMIT = 2 if not os.environ.get("DISPLAY") else 12      # product pages to open for seller/stock details
-ENRICH_TABS = 1 if not os.environ.get("DISPLAY") else 2        # opened concurrently
+ENRICH_LIMIT = int(os.environ.get("ENRICH_LIMIT", "0"))      # 0 in production/demo to avoid heavy tab spawning
+ENRICH_TABS = int(os.environ.get("ENRICH_TABS", "1"))
 
 # Words that turn a part class into an accessory of the requested part,
 # e.g. "Oil Filter Assy" / "Oil Filter Housing" under the Oil Filter category.

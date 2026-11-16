@@ -56,8 +56,8 @@ CHROMIUM_ARGS = [
     "--media-cache-size=1048576",
     "--js-flags=--max-old-space-size=96",
 ]
-MAX_PRODUCT_PAGES = 3 if not os.environ.get("DISPLAY") else 12
-DETAIL_WORKERS = 1 if not os.environ.get("DISPLAY") else 2
+MAX_PRODUCT_PAGES = int(os.environ.get("MAX_PRODUCT_PAGES", "0"))  # 0 in production/demo to avoid heavy tab spawning
+DETAIL_WORKERS = int(os.environ.get("DETAIL_WORKERS", "1"))
 
 
 def _clean(value: Optional[str]) -> str:

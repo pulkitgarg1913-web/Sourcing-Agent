@@ -572,14 +572,34 @@ async def collect(state: State, config) -> State:
                 message=f"{adapter.name} search failed: {e}",
             )
 
-    vendors = list(s.adapters.items())
-    outcomes = []
-    for name, adapter in vendors:
-        outcomes.append(await collect_vendor(adapter, profiles[name]))
+    COLLECT_TIMEOUT = float(os.environ.get("COLLECT_TIMEOUT_SECONDS", "30.0"))
+
+    async def collect_vendor_safe(name: str, adapter, vendor_profile: VehicleProfile):
         try:
-            await adapter.close()
-        except Exception as e:
-            log.warning("Error closing %s adapter: %s", name, e)
+            return await asyncio.wait_for(collect_vendor(adapter, vendor_profile), timeout=COLLECT_TIMEOUT)
+        except asyncio.TimeoutError:
+            log.warning("%s collection timed out after %.1fs", name, COLLECT_TIMEOUT)
+            return SearchOutcome(
+                vendor=name,
+                status="timeout",
+                vehicle_label=" ".join(x for x in (
+                    vendor_profile.maker, vendor_profile.model, vendor_profile.year,
+                    vendor_profile.variant,
+                ) if x),
+                listings=[],
+                source_url=getattr(adapter, "last_search_url", None),
+                message=f"{name.title()} search timed out after {int(COLLECT_TIMEOUT)} seconds; continuing.",
+            )
+        finally:
+            try:
+                await adapter.close()
+            except Exception as e:
+                log.warning("Error closing %s adapter: %s", name, e)
+
+    # Collect from both suppliers concurrently in parallel
+    outcomes = await asyncio.gather(
+        *(collect_vendor_safe(name, adapter, profiles[name]) for name, adapter in s.adapters.items())
+    )
     vendor_outcomes = [asdict(outcome) for outcome in outcomes]
     all_listings = [
         {**(listing.to_dict() if hasattr(listing, "to_dict") else dict(listing)), "vendor": outcome.vendor}
