@@ -776,25 +776,30 @@ def _summarize_boodmo(profile: VehicleProfile, outcome: dict) -> str:
     vehicle = " ".join(str(value) for value in (
         profile.maker, profile.model, profile.year, profile.variant
     ) if value) or "the requested vehicle"
-    if outcome["status"] == "no_results":
-        return f"For the {vehicle}: {outcome['message']}"
-    if outcome["status"] != "ok":
-        return f"For the {vehicle}: {outcome['message']} I won't suggest a part I can't verify."
-    ls = outcome["listings"]
-    exact = [l for l in ls if l["match"] == "exact"]
+    if outcome.get("status") == "no_results":
+        return f"For the {vehicle}: {outcome.get('message', 'No parts found.')}"
+    if outcome.get("status") != "ok":
+        return f"For the {vehicle}: {outcome.get('message', 'Search failed.')} I won't suggest a part I can't verify."
+    ls = outcome.get("listings") or []
+    exact = [l for l in ls if l.get("match", "exact") == "exact"]
     related = len(ls) - len(exact)
-    in_stock = [l for l in exact if l["available"] is True]
-    unchecked = [l for l in exact if l["available"] is None]
+    in_stock = [l for l in exact if l.get("available") is True]
+    unchecked = [l for l in exact if l.get("available") is None]
     n = len(exact)
-    active_cat = profile.hints.get("resolved_alternate_category") or profile.category
+    active_cat = profile.hints.get("resolved_alternate_category") or profile.category or profile.part or "parts"
     lines = [f"For the {vehicle}, Boodmo lists {n} part{'s' if n != 1 else ''} under "
              f"{active_cat} that fit this variant."]
     if in_stock:
         b = in_stock[0]
-        o = b["best_offer"]
-        lines.append(f"Cheapest in stock: {_name(b)}, part {b['part_number']}, {_rupees(b['price'])}"
-                     f" from seller {o['seller']}, {o['stock']}, dispatch in {o['dispatch']}.")
-        others = [f"{_name(l)} at {_rupees(l['price'])}" for l in in_stock[1:3]]
+        o = b.get("best_offer")
+        price_val = b.get("price")
+        price_str = _rupees(price_val) if price_val is not None else ""
+        if o and isinstance(o, dict) and o.get("seller"):
+            lines.append(f"Cheapest in stock: {_name(b)}, part {b.get('part_number', '')}, {price_str}"
+                         f" from seller {o.get('seller')}, {o.get('stock', 'in stock')}, dispatch in {o.get('dispatch', '1-2 days')}.")
+        else:
+            lines.append(f"Cheapest in stock: {_name(b)}, part {b.get('part_number', '')}, {price_str}.")
+        others = [f"{_name(l)} at {_rupees(l['price'])}" for l in in_stock[1:3] if l.get("price") is not None]
         if others:
             lines.append("Also in stock: " + "; ".join(others) + ".")
     else:
@@ -806,7 +811,7 @@ def _summarize_boodmo(profile: VehicleProfile, outcome: dict) -> str:
         lines.append(f"{gone} {'are' if gone > 1 else 'is'} listed with no seller in stock.")
     if related:
         lines.append(f"I left out {related} related part{'s' if related > 1 else ''} like assemblies or housings.")
-    if any(l["fitment"] == "partial" for l in exact):
+    if any(l.get("fitment") == "partial" for l in exact):
         lines.append("Some only fit one of Boodmo's catalogue entries for this variant, so they're marked partial.")
     lines.append("Boodmo doesn't give seller addresses, so I haven't ranked by distance. Nothing has been ordered.")
     return " ".join(lines)

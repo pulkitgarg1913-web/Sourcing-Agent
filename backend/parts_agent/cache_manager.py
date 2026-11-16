@@ -569,6 +569,14 @@ def _preseed_demo_cache():
     try:
         with _get_db() as conn:
             for rec in demo_records:
+                for outcome in rec["outcomes"]:
+                    for l in outcome.get("listings", []):
+                        l.setdefault("match", "exact")
+                        l.setdefault("best_offer", {
+                            "seller": "Authorized Supplier Hub",
+                            "stock": "in stock",
+                            "dispatch": "24-48 hrs"
+                        })
                 data_json = json.dumps(rec["outcomes"])
                 for k in rec["keys"]:
                     conn.execute("""
