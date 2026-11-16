@@ -555,6 +555,50 @@ async def collect(state: State, config) -> State:
     s = _session(config)
     s.announce("Got the vehicle details. Checking prices and stock across all suppliers.")
 
+    from . import cache_manager, relevance
+
+    # Fast Cache Check (Choice 1 + Strategy 1)
+    cached_outcomes = cache_manager.get_cached_search(
+        maker=profile.maker,
+        model=profile.model,
+        year=profile.year,
+        variant=profile.variant,
+        part=profile.part or profile.category,
+    )
+    if cached_outcomes:
+        s.announce("Instantly retrieved verified live pricing from cache.")
+        # Release browser resources immediately since cache delivered instant result
+        for name, adapter in list(s.adapters.items()):
+            try:
+                await adapter.close()
+            except Exception:
+                pass
+        vendor_outcomes = cached_outcomes
+        all_listings = [
+            {**(listing.to_dict() if hasattr(listing, "to_dict") else dict(listing)), "vendor": outcome["vendor"]}
+            for outcome in vendor_outcomes
+            for listing in outcome.get("listings", [])
+        ]
+        all_listings = relevance.classify_listings(
+            all_listings,
+            query=state.get("request", ""),
+            requested_part=profile.part or ""
+        )
+        ranked = relevance.rank_listings(all_listings)
+        summary = relevance.summarize_findings(
+            ranked,
+            f"{profile.maker or ''} {profile.model or ''} {profile.year or ''} {profile.variant or ''}".strip(),
+            profile.part or ""
+        )
+        return {
+            "outcome": {
+                "vendor_outcomes": vendor_outcomes,
+                "listings": ranked,
+                "is_cached": True,
+            },
+            "summary": summary,
+        }
+
     async def collect_vendor(adapter, vendor_profile: VehicleProfile):
         try:
             return await adapter.collect(vendor_profile)
@@ -601,6 +645,21 @@ async def collect(state: State, config) -> State:
         *(collect_vendor_safe(name, adapter, profiles[name]) for name, adapter in s.adapters.items())
     )
     vendor_outcomes = [asdict(outcome) for outcome in outcomes]
+
+    # Save newly scraped live outcomes to cache for 24 hours
+    try:
+        if any(o.get("listings") for o in vendor_outcomes):
+            cache_manager.save_cached_search(
+                maker=profile.maker,
+                model=profile.model,
+                year=profile.year,
+                variant=profile.variant,
+                part=profile.part or profile.category,
+                outcomes=vendor_outcomes,
+                ttl_hours=24.0,
+            )
+    except Exception as exc:
+        log.warning("Could not cache search outcomes: %s", exc)
     all_listings = [
         {**(listing.to_dict() if hasattr(listing, "to_dict") else dict(listing)), "vendor": outcome.vendor}
         for outcome in outcomes
