@@ -58,6 +58,15 @@ export async function resetSession(threadId) {
   return res.json().catch(() => ({}))
 }
 
+export async function cancelChat({ threadId }) {
+  const res = await fetch(`${BASE_URL}/api/chat/cancel`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ thread_id: threadId }),
+  })
+  return res.json().catch(() => ({}))
+}
+
 export async function getSessionHistory(threadId, after = 0) {
   try {
     const res = await fetch(`${BASE_URL}/api/session/${threadId}/history?after=${after}`)

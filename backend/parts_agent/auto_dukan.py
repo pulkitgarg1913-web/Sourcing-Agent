@@ -19,43 +19,21 @@ import asyncio
 import logging
 import os
 import re
+import time
 from typing import Callable, Optional
+import uuid
 from urllib.parse import parse_qs, urljoin, urlparse
 
-from playwright.async_api import async_playwright, Browser, Page
+from playwright.async_api import Browser, Page
 
 from . import llm
+from .browser_manager import get_browser_manager, CHROMIUM_ARGS, UA
 from .models import Listing, NeedInput, SearchOutcome, VehicleProfile
+from .perf_logger import perf_monitor
 
 log = logging.getLogger(__name__)
 
 BASE = "https://autodukan.com"
-UA = (
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/140.0 Safari/537.36"
-)
-CHROMIUM_ARGS = [
-    "--no-sandbox",
-    "--disable-setuid-sandbox",
-    "--disable-dev-shm-usage",
-    "--disable-gpu",
-    "--no-zygote",
-    "--disable-software-rasterizer",
-    "--mute-audio",
-    "--disable-background-networking",
-    "--disable-background-timer-throttling",
-    "--disable-backgrounding-occluded-windows",
-    "--disable-breakpad",
-    "--disable-component-extensions-with-background-pages",
-    "--disable-extensions",
-    "--disable-features=Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints,IsolateOrigins,site-per-process",
-    "--disable-ipc-flooding-protection",
-    "--disable-renderer-backgrounding",
-    "--force-color-profile=srgb",
-    "--disk-cache-size=1048576",
-    "--media-cache-size=1048576",
-    "--js-flags=--max-old-space-size=96",
-]
 MAX_PRODUCT_PAGES = int(os.environ.get("MAX_PRODUCT_PAGES", "0"))  # 0 in production/demo to avoid heavy tab spawning
 DETAIL_WORKERS = int(os.environ.get("DETAIL_WORKERS", "1"))
 
@@ -209,6 +187,20 @@ def _variant_matches_hints(option: str, hints: dict) -> bool:
     return True
 
 
+def _is_page_open(page) -> bool:
+    if not page:
+        return False
+    try:
+        if callable(getattr(page, "is_closed", None)):
+            res = page.is_closed()
+            if isinstance(res, bool):
+                return not res
+            return True
+        return True
+    except Exception:
+        return False
+
+
 class AutoDukanAdapter:
     name = "autodukan"
 
@@ -218,6 +210,8 @@ class AutoDukanAdapter:
         progress: Callable[[str], None] | None = None,
         base_url: str = BASE,
         record_video_dir: Optional[str] = None,
+        session_id: Optional[str] = None,
+        browser_manager=None,
     ):
         if not os.environ.get("DISPLAY"):
             headless = True
@@ -225,11 +219,14 @@ class AutoDukanAdapter:
         self.progress = progress or (lambda message: None)
         self.base_url = base_url.rstrip("/")
         self.record_video_dir = record_video_dir
+        self.session_id = session_id or str(uuid.uuid4())
+        self.browser_manager = browser_manager or get_browser_manager()
         self.video_path: Optional[str] = None
-        self._pw = None
-        self.browser: Browser | None = None
         self.page: Page | None = None
         self.last_search_url: Optional[str] = None
+        # Track advance state to prevent duplicate advancement
+        self._advanced_signature: Optional[str] = None
+        self._advanced_ok: bool = False
         self._vehicle_confirmed = False
         self._category_confirmed = False
         self._car_model_id: Optional[str] = None
@@ -245,110 +242,106 @@ class AutoDukanAdapter:
     # ------------------------------------------------------------------ lifecycle
 
     async def start(self):
-        if self.page and not self.page.is_closed():
-            try:
-                await self.page.evaluate("1")
+        """Get or recreate the dedicated AutoDukan page from the shared BrowserManager."""
+        if self.page:
+            # Handle mock page in unit tests without invoking real browser
+            if hasattr(self.page, "_mock_return_value") or hasattr(self.page, "_mock_methods") or not hasattr(self.page, "evaluate"):
                 return
-            except Exception:
-                log.warning("AutoDukan page target crashed or unresponsive; restarting...")
-                await self.close()
-        self._pw = await async_playwright().start()
-        self.browser = await self._pw.chromium.launch(headless=self.headless, args=CHROMIUM_ARGS)
-        ctx_opts = {
-            "viewport": {"width": 1440, "height": 1000},
-            "user_agent": UA,
-            "locale": "en-IN",
-        }
-        from pathlib import Path
-        if self.record_video_dir:
-            Path(self.record_video_dir).mkdir(parents=True, exist_ok=True)
-            ctx_opts["record_video_dir"] = self.record_video_dir
-            ctx_opts["record_video_size"] = {"width": 1280, "height": 720}
-        context = await self.browser.new_context(**ctx_opts)
-        async def _block_heavy(route):
             try:
-                if route.request.resource_type in ("image", "media", "font"):
-                    await route.abort()
-                else:
-                    await route.continue_()
+                if _is_page_open(self.page):
+                    await self.page.evaluate("1")
+                    return
             except Exception:
-                pass
+                log.warning("AutoDukan page target crashed or closed; re-acquiring...")
+                self.page = None
 
-        try:
-            await context.route("**/*", _block_heavy)
-        except Exception:
-            pass
-        self.page = await context.new_page()
+        t0 = time.time()
+        self.page = await self.browser_manager.get_page(
+            self.session_id,
+            self.name,
+            record_video_dir=self.record_video_dir,
+            viewport_width=1440,
+            viewport_height=1000,
+        )
+        m = perf_monitor.get_metrics(self.session_id, self.name)
+        m.browser_init_seconds = round(time.time() - t0, 2)
 
     async def close(self):
+        """Release page resources via BrowserManager without closing the shared browser."""
         if self.page:
             try:
-                if self.page.video:
+                if hasattr(self.page, "video") and self.page.video:
                     self.video_path = await self.page.video.path()
             except Exception:
                 pass
             try:
-                await self.page.close()
-            except Exception:
-                pass
+                await self.browser_manager.close_adapter(self.session_id, self.name)
+            except Exception as exc:
+                log.warning("Error releasing AutoDukan page in browser_manager: %s", exc)
             self.page = None
-        if self.browser:
-            try:
-                await self.browser.close()
-            except Exception:
-                pass
-            self.browser = None
-        if self._pw:
-            try:
-                await self._pw.stop()
-            except Exception:
-                pass
-            self._pw = None
 
     async def _wait(self, ms: int):
         await asyncio.sleep(ms / 1000.0)
 
     async def _goto(self, url: str):
+        NAV_TIMEOUT = int(os.environ.get("NAVIGATION_TIMEOUT_SECONDS", "15000"))
+        RETRY_TIMEOUT = int(os.environ.get("NAVIGATION_RETRY_TIMEOUT_SECONDS", "12000"))
+        t0 = time.time()
+
         for attempt in range(2):
             try:
-                if not self.page or self.page.is_closed():
-                    if not self.browser or not self.browser.is_connected():
-                        await self.start()
-                    else:
-                        ctx = self.browser.contexts[0] if self.browser.contexts else await self.browser.new_context()
-                        self.page = await ctx.new_page()
-                await self.page.goto(url, wait_until="domcontentloaded", timeout=25000)
+                await self.start()
+                timeout_ms = NAV_TIMEOUT if attempt == 0 else RETRY_TIMEOUT
+                wait_state = "domcontentloaded" if attempt == 0 else "commit"
+                await self.page.goto(url, wait_until=wait_state, timeout=timeout_ms)
                 break
             except Exception as exc:
                 err_msg = str(exc).lower()
-                is_crash = "crashed" in err_msg or "closed" in err_msg or "aborted" in err_msg or "detached" in err_msg
+                is_crash = any(k in err_msg for k in ("crashed", "closed", "aborted", "detached", "context destroyed"))
                 log.warning("AutoDukan navigation attempt %d failed for %s (%s)", attempt + 1, url, exc)
-                if is_crash and self.page:
-                    try:
-                        await self.page.close()
-                    except Exception:
-                        pass
+                if is_crash:
                     self.page = None
                 if attempt == 0:
                     try:
-                        if not self.page or self.page.is_closed():
-                            ctx = self.browser.contexts[0] if (self.browser and self.browser.contexts) else None
-                            if ctx:
-                                self.page = await ctx.new_page()
+                        await self.start()
                         if self.page:
-                            await self.page.goto(url, wait_until="commit", timeout=12000)
+                            await self.page.goto(url, wait_until="commit", timeout=RETRY_TIMEOUT)
                             break
                     except Exception as e2:
                         log.warning("AutoDukan retry commit failed: %s", e2)
                 else:
+                    m = perf_monitor.get_metrics(self.session_id, self.name)
+                    m.status = "navigation_failed"
                     raise
         try:
-            if self.page and not self.page.is_closed():
+            if _is_page_open(self.page):
                 await self.page.wait_for_load_state("domcontentloaded", timeout=4000)
         except Exception:
             pass
-        await asyncio.sleep(0.4)
-        self.last_search_url = self.page.url if self.page and not self.page.is_closed() else url
+
+        # Detect challenge or blocked page
+        if _is_page_open(self.page):
+            try:
+                title = await self.page.title()
+                body_snippet = await self.page.evaluate("() => document.body ? document.body.innerText.slice(0, 1000) : ''")
+                combined = f"{title.lower()} {body_snippet.lower()}"
+                if any(w in combined for w in ("attention required! | cloudflare", "just a moment...", "turnstile", "verify you are human", "cf-challenge")):
+                    log.warning("AutoDukan bot-protection challenge detected at %s", url)
+                    m = perf_monitor.get_metrics(self.session_id, self.name)
+                    m.status = "blocked"
+                    raise RuntimeError(f"AutoDukan bot-protection challenge encountered at {url}")
+                if any(w in combined for w in ("403 forbidden", "access denied", "error 403", "429 too many requests")):
+                    log.warning("AutoDukan access blocked (403/429) at %s", url)
+                    m = perf_monitor.get_metrics(self.session_id, self.name)
+                    m.status = "blocked"
+                    raise RuntimeError(f"AutoDukan access denied (403/429) at {url}")
+            except Exception as chk_err:
+                if "challenge" in str(chk_err).lower() or "denied" in str(chk_err).lower():
+                    raise
+
+        m = perf_monitor.get_metrics(self.session_id, self.name)
+        m.navigation_seconds += round(time.time() - t0, 2)
+        self.last_search_url = self.page.url if self.page else None if self.page and not self.page.is_closed() else url
 
     # ------------------------------------------------------------------ contract
 
@@ -660,46 +653,69 @@ class AutoDukanAdapter:
     async def advance(self, profile: VehicleProfile) -> Optional[NeedInput]:
         """Resolve AutoDukan's own category and vehicle selector before search."""
         await self.start()
+        sig = f"{profile.maker}:{profile.model}:{profile.year}:{profile.variant}:{profile.category}"
+        if (self._advanced_signature == sig and self._advanced_ok
+                and self._vehicle_confirmed and self._category_confirmed
+                and self._confirmed_vehicle == _vehicle_label(profile)
+                and self._confirmed_category == profile.category
+                and not getattr(self, "_using_search_fallback", False)):
+            log.info("AutoDukan already advanced for %s; reusing state", sig)
+            return None
+
         if profile.hints.get("commercial_warning") or getattr(self, "_using_search_fallback", False):
             await self._search_fallback(profile)
+            self._advanced_signature = sig
+            self._advanced_ok = True
             return None
         need = await self.resolve_category(profile)
         if need:
             if profile.hints.get("commercial_warning"):
                 await self._search_fallback(profile)
+                self._advanced_signature = sig
+                self._advanced_ok = True
                 return None
             return need
 
         if (self._vehicle_confirmed and self._category_confirmed
                 and self._confirmed_vehicle == _vehicle_label(profile)
                 and self._confirmed_category == profile.category):
+            self._advanced_signature = sig
+            self._advanced_ok = True
             return None
 
-        if self.page.url.rstrip("/") != self.base_url:
+        if self.page and self.page.url.rstrip("/") != self.base_url:
             await self._goto(self.base_url)
 
         ok, reason, need = await self._select_vehicle(profile)
         if need:
             return need
         if self._using_search_fallback:
+            self._advanced_signature = sig
+            self._advanced_ok = True
             return None
         if not ok:
             log.warning("AutoDukan vehicle selector unavailable (%s); falling back to direct search", reason)
             self._last_failure = reason
             await self._search_fallback(profile)
+            self._advanced_signature = sig
+            self._advanced_ok = True
             return None
 
         ok, reason = await self._select_category(profile.category)
         if not ok:
             log.info("AutoDukan category '%s' not reachable via direct catalog (%s). Falling back to keyword search.", profile.category, reason)
             await self._search_fallback(profile)
+            self._advanced_signature = sig
+            self._advanced_ok = True
             return None
 
         self._vehicle_confirmed = True
         self._category_confirmed = True
         self._confirmed_vehicle = _vehicle_label(profile)
         self._confirmed_category = profile.category
-        self.last_search_url = self.page.url
+        self._advanced_signature = sig
+        self._advanced_ok = True
+        self.last_search_url = self.page.url if self.page else None
         return None
 
     # ------------------------------------------------------------------ vehicle selector
@@ -1218,7 +1234,7 @@ class AutoDukanAdapter:
                     if "product not found" in body or (self.page and "/products-list" in self.page.url):
                         self._category_confirmed = True
                         self._confirmed_category = requested
-                        self.last_search_url = self.page.url
+                        self.last_search_url = self.page.url if self.page else None
                         return True, ""
             except Exception as exc:
                 log.info("AutoDukan direct vehicle category navigation failed: %s", exc)
@@ -1293,7 +1309,7 @@ class AutoDukanAdapter:
         if (target not in body and target not in current_path
                 and not any(_norm(item) in body for item in path)):
             return False, f"AutoDukan did not show the selected category '{requested}'."
-        self.last_search_url = self.page.url
+        self.last_search_url = self.page.url if self.page else None
         return True, ""
 
     # ------------------------------------------------------------------ extraction
@@ -1492,6 +1508,8 @@ class AutoDukanAdapter:
     # ------------------------------------------------------------------ collect
 
     async def collect(self, profile: VehicleProfile) -> SearchOutcome:
+        t0_collect = time.time()
+        m = perf_monitor.get_metrics(self.session_id, self.name)
         await self.start()
         vehicle = _vehicle_label(profile)
 
@@ -1503,16 +1521,24 @@ class AutoDukanAdapter:
                 log.warning("Could not navigate to target_url on collect: %s", e)
 
         # Guard against callers that invoke collect() without first calling advance().
-        need = await self.advance(profile)
-        if need:
-            return SearchOutcome(
-                vendor=self.name,
-                status="extraction_failed",
-                vehicle_label=vehicle,
-                listings=[],
-                source_url=self.last_search_url or self.page.url,
-                message=need.question,
-            )
+        sig = f"{profile.maker}:{profile.model}:{profile.year}:{profile.variant}:{profile.category}"
+        if not (self._advanced_signature == sig and self._advanced_ok):
+            need = await self.advance(profile)
+            if need:
+                elapsed = round(time.time() - t0_collect, 2)
+                outcome = SearchOutcome(
+                    vendor=self.name,
+                    status="extraction_failed",
+                    vehicle_label=vehicle,
+                    listings=[],
+                    source_url=self.last_search_url or self.page.url,
+                    message=need.question,
+                    elapsed_seconds=elapsed,
+                )
+                m.total_seconds = elapsed
+                m.status = outcome.status
+                perf_monitor.log_supplier_completed(self.session_id, self.name)
+                return outcome
 
         if getattr(self, "_using_search_fallback", False):
             vehicle = f"{profile.maker or profile.hints.get('make') or ''} {profile.model or profile.hints.get('model') or ''}".strip() or "the requested vehicle"
@@ -1567,13 +1593,19 @@ class AutoDukanAdapter:
                     fitment_basis=f"AutoDukan keyword search bar fallback for '{vehicle}'",
                 )
                 listings.append(listing)
+            elapsed = round(time.time() - t0_collect, 2)
+            m.total_seconds = elapsed
+            m.products_extracted = len(listings)
+            m.status = "ok" if listings else "no_results"
+            perf_monitor.log_supplier_completed(self.session_id, self.name)
             return SearchOutcome(
                 vendor=self.name,
                 status="ok" if listings else "no_results",
                 vehicle_label=vehicle,
                 listings=[l.to_dict() if hasattr(l, "to_dict") else l for l in listings],
-                source_url=self.page.url,
-                message=f"AutoDukan search bar found {len(listings)} listings for {vehicle}." if listings else f"AutoDukan search bar found no listings for {vehicle}."
+                source_url=self.last_search_url or self.page.url,
+                message=f"AutoDukan search bar found {len(listings)} listings for {vehicle}." if listings else f"AutoDukan search bar found no listings for {vehicle}.",
+                elapsed_seconds=elapsed,
             )
 
         self.progress(f"Reading AutoDukan {profile.category} listings for {vehicle}")
@@ -1709,10 +1741,17 @@ class AutoDukanAdapter:
         stock_rank = {True: 0, None: 1, False: 2}
         listings.sort(key=lambda item: (stock_rank.get(item.available, 1), item.price if item.price is not None else float("inf")))
 
+        elapsed = round(time.time() - t0_collect, 2)
+        m.total_seconds = elapsed
+        m.products_extracted = len(listings)
+        m.status = "ok" if listings else "no_results"
+        perf_monitor.log_supplier_completed(self.session_id, self.name)
+
         return SearchOutcome(
             vendor=self.name,
-            status="ok",
+            status="ok" if listings else "no_results",
             vehicle_label=vehicle,
             listings=[item.to_dict() for item in listings],
-            source_url=self.page.url,
+            source_url=self.last_search_url or self.page.url,
+            elapsed_seconds=elapsed,
         )

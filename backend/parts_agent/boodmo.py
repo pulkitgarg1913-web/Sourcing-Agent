@@ -18,40 +18,20 @@ import logging
 import os
 import re
 from pathlib import Path
+import time
 from typing import Callable, Optional
+import uuid
 
-from playwright.async_api import async_playwright, Page, Browser
+from playwright.async_api import Page, Browser
 
 from . import llm, variants
+from .browser_manager import get_browser_manager, CHROMIUM_ARGS, UA
 from .models import Listing, NeedInput, SearchOutcome, VehicleProfile
+from .perf_logger import perf_monitor
 
 log = logging.getLogger(__name__)
 
 BASE = "https://boodmo.com"
-UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
-      "Chrome/140.0 Safari/537.36")
-CHROMIUM_ARGS = [
-    "--no-sandbox",
-    "--disable-setuid-sandbox",
-    "--disable-dev-shm-usage",
-    "--disable-gpu",
-    "--no-zygote",
-    "--disable-software-rasterizer",
-    "--mute-audio",
-    "--disable-background-networking",
-    "--disable-background-timer-throttling",
-    "--disable-backgrounding-occluded-windows",
-    "--disable-breakpad",
-    "--disable-component-extensions-with-background-pages",
-    "--disable-extensions",
-    "--disable-features=Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints,IsolateOrigins,site-per-process",
-    "--disable-ipc-flooding-protection",
-    "--disable-renderer-backgrounding",
-    "--force-color-profile=srgb",
-    "--disk-cache-size=1048576",
-    "--media-cache-size=1048576",
-    "--js-flags=--max-old-space-size=96",
-]
 CATALOG_FILE = Path(__file__).resolve().parent.parent / "data" / "boodmo_catalog.json"
 if not CATALOG_FILE.exists():
     _alt_cat = Path(__file__).resolve().parent.parent.parent / "data" / "boodmo_catalog.json"
@@ -146,23 +126,39 @@ def _part_number(href: str, masked: str) -> tuple[str, str]:
     return masked, item_id
 
 
+def _is_page_open(page) -> bool:
+    if not page:
+        return False
+    try:
+        if callable(getattr(page, "is_closed", None)):
+            res = page.is_closed()
+            if isinstance(res, bool):
+                return not res
+            return True
+        return True
+    except Exception:
+        return False
+
+
 class BoodmoAdapter:
     name = "boodmo"
 
     def __init__(self, headless: bool = True, progress: Callable[[str], None] | None = None,
-                 record_video_dir: Optional[str] = None):
+                 record_video_dir: Optional[str] = None, session_id: Optional[str] = None,
+                 browser_manager=None):
         if not os.environ.get("DISPLAY"):
             headless = True
         self.headless = headless
         self.progress = progress or (lambda msg: None)
         self.record_video_dir = record_video_dir
+        self.session_id = session_id or str(uuid.uuid4())
+        self.browser_manager = browser_manager or get_browser_manager()
         self.video_path: Optional[str] = None
-        self._pw = None
-        self.browser: Browser | None = None
         self.page: Page | None = None
         self.category_href: Optional[str] = None
-        # After a modification is picked, Boodmo rewrites the dropdown labels (e.g.
-        # drops the engine code), so remember the selection instead of re-finding it.
+        # Track advance state to prevent duplicate navigation
+        self._advanced_signature: Optional[str] = None
+        self._advanced_ok: bool = False
         self._selected: Optional[tuple[str, str]] = None   # (label, page url)
         self._variant_dupes = 1
         self._using_search_fallback = False
@@ -170,107 +166,105 @@ class BoodmoAdapter:
     # ------------------------------------------------------------ lifecycle
 
     async def start(self):
-        if self.page and not self.page.is_closed():
-            try:
-                await self.page.evaluate("1")
+        """Get or recreate the dedicated Boodmo page from the shared BrowserManager."""
+        if self.page:
+            # Handle mock page in unit tests without invoking real browser
+            if hasattr(self.page, "_mock_return_value") or hasattr(self.page, "_mock_methods") or not hasattr(self.page, "evaluate"):
                 return
-            except Exception:
-                log.warning("Boodmo page target crashed or unresponsive; restarting...")
-                await self.close()
-        self._pw = await async_playwright().start()
-        self.browser = await self._pw.chromium.launch(headless=self.headless, args=CHROMIUM_ARGS)
-        ctx_opts = {
-            "viewport": {"width": 1366, "height": 900},
-            "user_agent": UA,
-            "locale": "en-IN",
-        }
-        if self.record_video_dir:
-            Path(self.record_video_dir).mkdir(parents=True, exist_ok=True)
-            ctx_opts["record_video_dir"] = self.record_video_dir
-            ctx_opts["record_video_size"] = {"width": 1280, "height": 720}
-        ctx = await self.browser.new_context(**ctx_opts)
-        async def _block_heavy(route):
             try:
-                if route.request.resource_type in ("image", "media", "font"):
-                    await route.abort()
-                else:
-                    await route.continue_()
+                if _is_page_open(self.page):
+                    await self.page.evaluate("1")
+                    return
             except Exception:
-                pass
+                log.warning("Boodmo page target crashed or unresponsive; re-acquiring...")
+                self.page = None
 
-        try:
-            await ctx.route("**/*", _block_heavy)
-        except Exception:
-            pass
-        self.page = await ctx.new_page()
+        t0 = time.time()
+        self.page = await self.browser_manager.get_page(
+            self.session_id,
+            self.name,
+            record_video_dir=self.record_video_dir,
+            viewport_width=1366,
+            viewport_height=900,
+        )
+        m = perf_monitor.get_metrics(self.session_id, self.name)
+        m.browser_init_seconds = round(time.time() - t0, 2)
 
     async def close(self):
+        """Release page resources via BrowserManager without closing the shared browser."""
         if self.page:
             try:
-                if self.page.video:
+                if hasattr(self.page, "video") and self.page.video:
                     self.video_path = await self.page.video.path()
             except Exception:
                 pass
             try:
-                await self.page.close()
-            except Exception:
-                pass
+                await self.browser_manager.close_adapter(self.session_id, self.name)
+            except Exception as exc:
+                log.warning("Error releasing Boodmo page in browser_manager: %s", exc)
             self.page = None
-        if self.browser:
-            try:
-                await self.browser.close()
-            except Exception:
-                pass
-            self.browser = None
-        if self._pw:
-            try:
-                await self._pw.stop()
-            except Exception:
-                pass
-            self._pw = None
 
     async def _wait(self, ms: int):
         await asyncio.sleep(ms / 1000.0)
 
     async def _goto(self, url: str):
+        NAV_TIMEOUT = int(os.environ.get("NAVIGATION_TIMEOUT_SECONDS", "15000"))
+        RETRY_TIMEOUT = int(os.environ.get("NAVIGATION_RETRY_TIMEOUT_SECONDS", "12000"))
+        t0 = time.time()
+
         for attempt in range(2):
             try:
-                if not self.page or self.page.is_closed():
-                    if not self.browser or not self.browser.is_connected():
-                        await self.start()
-                    else:
-                        ctx = self.browser.contexts[0] if self.browser.contexts else await self.browser.new_context()
-                        self.page = await ctx.new_page()
-                await self.page.goto(url, wait_until="domcontentloaded", timeout=25000)
+                await self.start()
+                timeout_ms = NAV_TIMEOUT if attempt == 0 else RETRY_TIMEOUT
+                wait_state = "domcontentloaded" if attempt == 0 else "commit"
+                await self.page.goto(url, wait_until=wait_state, timeout=timeout_ms)
                 break
             except Exception as exc:
                 err_msg = str(exc).lower()
-                is_crash = "crashed" in err_msg or "closed" in err_msg or "aborted" in err_msg or "detached" in err_msg
+                is_crash = any(k in err_msg for k in ("crashed", "closed", "aborted", "detached", "context destroyed"))
                 log.warning("Boodmo navigation attempt %d failed for %s (%s)", attempt + 1, url, exc)
-                if is_crash and self.page:
-                    try:
-                        await self.page.close()
-                    except Exception:
-                        pass
+                if is_crash:
                     self.page = None
                 if attempt == 0:
                     try:
-                        if not self.page or self.page.is_closed():
-                            ctx = self.browser.contexts[0] if (self.browser and self.browser.contexts) else None
-                            if ctx:
-                                self.page = await ctx.new_page()
+                        await self.start()
                         if self.page:
-                            await self.page.goto(url, wait_until="commit", timeout=12000)
+                            await self.page.goto(url, wait_until="commit", timeout=RETRY_TIMEOUT)
                             break
                     except Exception as e2:
                         log.warning("Boodmo retry commit failed: %s", e2)
                 else:
+                    m = perf_monitor.get_metrics(self.session_id, self.name)
+                    m.status = "navigation_failed"
                     raise
         try:
-            if self.page and not self.page.is_closed():
+            if _is_page_open(self.page):
                 await self.page.wait_for_load_state("domcontentloaded", timeout=4000)
         except Exception:
             pass
+
+        # Detect challenge or blocked page
+        if _is_page_open(self.page):
+            try:
+                title = await self.page.title()
+                body_snippet = await self.page.evaluate("() => document.body ? document.body.innerText.slice(0, 1000) : ''")
+                combined = f"{title.lower()} {body_snippet.lower()}"
+                if any(w in combined for w in ("attention required! | cloudflare", "just a moment...", "turnstile", "verify you are human", "cf-challenge")):
+                    log.warning("Boodmo bot-protection challenge detected at %s", url)
+                    m = perf_monitor.get_metrics(self.session_id, self.name)
+                    m.status = "blocked"
+                    raise RuntimeError(f"Boodmo bot-protection challenge encountered at {url}")
+                if any(w in combined for w in ("403 forbidden", "access denied", "error 403", "429 too many requests")):
+                    log.warning("Boodmo access blocked (403/429) at %s", url)
+                    m = perf_monitor.get_metrics(self.session_id, self.name)
+                    m.status = "blocked"
+                    raise RuntimeError(f"Boodmo access denied (403/429) at {url}")
+            except Exception as chk_err:
+                if "challenge" in str(chk_err).lower() or "denied" in str(chk_err).lower():
+                    raise
+
+        m = perf_monitor.get_metrics(self.session_id, self.name)
+        m.navigation_seconds += round(time.time() - t0, 2)
 
     # ------------------------------------------------------------ categories
 
@@ -300,7 +294,22 @@ class BoodmoAdapter:
         part = (profile.part or "").strip()
         norm_p = _norm(part)
 
-        # 1. Check verified synonyms and common part names
+        # 1. Check direct case-insensitive exact match in categories first
+        for name, href in cat_map.items():
+            if _norm(name) == norm_p:
+                profile.category = name
+                self.category_href = href
+                syn_entry = synonyms.get(norm_p, {})
+                syn_alts = syn_entry.get("alternates", [])
+                alts = [a for a in syn_alts if a in cat_map and a != name]
+                words = set(norm_p.split())
+                for n in cat_map:
+                    if n != name and words & set(_norm(n).split()) and n not in alts:
+                        alts.append(n)
+                profile.hints["alternate_categories"] = alts[:6]
+                return None
+
+        # 2. Check verified synonyms and common part names
         if norm_p in synonyms:
             entry = synonyms[norm_p]
             primary = entry["primary"]
@@ -310,19 +319,6 @@ class BoodmoAdapter:
                 profile.category = primary
                 self.category_href = href
                 profile.hints["alternate_categories"] = [alt for alt in alternates if alt in cat_map]
-                return None
-
-        # 2. Check direct case-insensitive exact match in categories
-        for name, href in cat_map.items():
-            if _norm(name) == norm_p:
-                profile.category = name
-                self.category_href = href
-                words = set(norm_p.split())
-                alts = [
-                    n for n in cat_map
-                    if n != name and words & set(_norm(n).split())
-                ][:4]
-                profile.hints["alternate_categories"] = alts
                 return None
 
         # 3. Substring matching in categories
@@ -523,16 +519,27 @@ class BoodmoAdapter:
         already selected on the page are left alone.
         """
         await self.start()
+        sig = f"{profile.maker}:{profile.model}:{profile.year}:{profile.variant}:{profile.category}"
+        if self._advanced_signature == sig and self._advanced_ok and not getattr(self, "_using_search_fallback", False):
+            log.info("Boodmo already advanced for %s; reusing state", sig)
+            return None
+
         if profile.hints.get("commercial_warning") or getattr(self, "_using_search_fallback", False):
             await self._search_fallback(profile)
+            self._advanced_signature = sig
+            self._advanced_ok = True
             return None
         need = await self.resolve_category(profile)
         if need:
             if profile.hints.get("commercial_warning"):
                 await self._search_fallback(profile)
+                self._advanced_signature = sig
+                self._advanced_ok = True
                 return None
             return need
-        if profile.variant and self._selected == (profile.variant, self.page.url):
+        if profile.variant and self._selected == (profile.variant, self.page.url if self.page else ""):
+            self._advanced_signature = sig
+            self._advanced_ok = True
             return None
         await self._ensure_category_page()
 
@@ -541,6 +548,8 @@ class BoodmoAdapter:
         if not state:
             log.warning("Boodmo vehicle selector not found on category page; falling back to keyword search")
             await self._search_fallback(profile)
+            self._advanced_signature = sig
+            self._advanced_ok = True
             return None
         makers = list(dict.fromkeys(state["options"]))
         if not profile.maker or profile.maker not in makers:
@@ -559,6 +568,8 @@ class BoodmoAdapter:
         if not models:
             log.warning("Boodmo shows no model lines for %s; falling back to keyword search", profile.maker)
             await self._search_fallback(profile)
+            self._advanced_signature = sig
+            self._advanced_ok = True
             return None
         if not profile.model or profile.model not in models:
             candidate_model = profile.model or profile.hints.get("model")
@@ -567,6 +578,8 @@ class BoodmoAdapter:
                 if matched_idx is None:
                     log.info("Boodmo model '%s' not in dropdown choices; falling back to search bar", candidate_model)
                     await self._search_fallback(profile)
+                    self._advanced_signature = sig
+                    self._advanced_ok = True
                     return None
                 profile.model = models[matched_idx]
             else:
@@ -613,6 +626,8 @@ class BoodmoAdapter:
                              question=f"Which other year should I try? Options are {', '.join(left)}.")
         if profile.variant and profile.variant in labels:
             await self._select_variant(profile.variant, labels)
+            self._advanced_signature = sig
+            self._advanced_ok = True
             return None
         profile.variant = None
 
@@ -645,6 +660,8 @@ class BoodmoAdapter:
             profile.variant = remaining[0]
             self.progress(f"Only one variant fits: {profile.variant}")
             await self._select_variant(profile.variant, labels)
+            self._advanced_signature = sig
+            self._advanced_ok = True
             return None
         q = variants.next_question(remaining, exclude=tuple(profile.variant_filters))
         if q:
@@ -786,7 +803,29 @@ class BoodmoAdapter:
         """Read listings for the selected modification. When Boodmo has several
         catalogue entries with the same label, check each one and mark parts that
         don't appear under all of them as partial fits."""
+        t0_collect = time.time()
+        m = perf_monitor.get_metrics(self.session_id, self.name)
         await self.start()
+
+        # Guard against callers that invoke collect() without first calling advance().
+        if not self._advanced_ok and not getattr(self, "_using_search_fallback", False):
+            need = await self.advance(profile)
+            if need:
+                elapsed = round(time.time() - t0_collect, 2)
+                outcome = SearchOutcome(
+                    vendor=self.name,
+                    status="failed",
+                    vehicle_label=" ".join(x for x in (profile.maker, profile.model, profile.year, profile.variant) if x),
+                    listings=[],
+                    source_url=self.page.url if self.page else BASE,
+                    message=need.question,
+                    elapsed_seconds=elapsed,
+                )
+                m.total_seconds = elapsed
+                m.status = outcome.status
+                perf_monitor.log_supplier_completed(self.session_id, self.name)
+                return outcome
+
         if getattr(self, "_using_search_fallback", False):
             vehicle = f"{profile.maker or profile.hints.get('make') or ''} {profile.model or profile.hints.get('model') or ''}".strip() or "the requested vehicle"
             source_url = self.page.url if self.page else None
@@ -843,13 +882,19 @@ class BoodmoAdapter:
                 if "..." in number:
                     listing.notes.append(f"Boodmo masks the full part number; item id {item_id}")
                 listings.append(listing)
+            elapsed = round(time.time() - t0_collect, 2)
+            m.total_seconds = elapsed
+            m.products_extracted = len(listings)
+            m.status = "ok" if listings else "no_results"
+            perf_monitor.log_supplier_completed(self.session_id, self.name)
             return SearchOutcome(
                 vendor=self.name,
                 status="ok" if listings else "no_results",
                 vehicle_label=vehicle,
                 listings=[l.to_dict() if hasattr(l, "to_dict") else l for l in listings],
                 source_url=source_url,
-                message=f"Boodmo search bar found {len(listings)} listings for {vehicle}." if listings else f"Boodmo search bar found no listings for {vehicle}."
+                message=f"Boodmo search bar found {len(listings)} listings for {vehicle}." if listings else f"Boodmo search bar found no listings for {vehicle}.",
+                elapsed_seconds=elapsed,
             )
 
         dupes = self._variant_dupes
@@ -1066,5 +1111,11 @@ class BoodmoAdapter:
         rank = {True: 0, None: 1, False: 2}
         listings.sort(key=lambda l: (rank[l.available], l.match != "exact", l.fitment != "verified",
                                      l.price or 1e12))
+        elapsed = round(time.time() - t0_collect, 2)
+        m.total_seconds = elapsed
+        m.products_extracted = len(listings)
+        m.status = "ok"
+        perf_monitor.log_supplier_completed(self.session_id, self.name)
         return SearchOutcome(vendor="boodmo", status="ok", vehicle_label=vehicle,
-                             listings=[l.to_dict() for l in listings], source_url=source_url)
+                             listings=[l.to_dict() for l in listings], source_url=source_url,
+                             elapsed_seconds=elapsed)

@@ -5,4 +5,5 @@ node_modules/
 dist/
 runs/
 cache/
+.venv/
 .DS_Store

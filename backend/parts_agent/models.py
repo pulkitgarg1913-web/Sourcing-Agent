@@ -26,7 +26,9 @@ class VehicleProfile:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, d: dict | None) -> "VehicleProfile":
+    def from_dict(cls, d: dict | "VehicleProfile" | None) -> "VehicleProfile":
+        if isinstance(d, cls):
+            return d
         return cls(**(d or {}))
 
 
@@ -82,8 +84,12 @@ class Listing:
 @dataclass
 class SearchOutcome:
     vendor: str
-    status: str                 # ok | no_results | failed
+    status: str                 # ok | no_results | failed | timeout | blocked
     vehicle_label: str
     listings: list[dict]
     source_url: str
     message: str = ""
+    elapsed_seconds: float = 0.0
+    source_type: str = "live"   # live | cached | demo
+    is_cached: bool = False
+    is_demo: bool = False

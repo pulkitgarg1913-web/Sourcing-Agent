@@ -8,6 +8,7 @@ incremental product listings.
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 import json
 import logging
 import os
@@ -33,6 +34,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from parts_agent import voice
+from parts_agent.browser_manager import get_browser_manager
 from parts_agent.graph import (
     Conversation,
     SESSIONS,
@@ -59,7 +61,27 @@ logging.basicConfig(
 )
 log = logging.getLogger("server")
 
-app = FastAPI(title="Conversational AI Parts Sourcing Agent API", version="1.0.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage centralized Playwright and Chromium runtime lifecycle."""
+    log.info("Starting up FastAPI application: initializing centralized BrowserManager...")
+    bm = get_browser_manager()
+    use_headless = True if not os.environ.get("DISPLAY") else True
+    try:
+        await bm.initialize(headless=use_headless)
+    except Exception as e:
+        log.warning("Initial browser pre-warm deferred: %s", e)
+    yield
+    log.info("Shutting down FastAPI application: releasing all browser sessions and Chromium...")
+    try:
+        await close_all_stale_sessions()
+        await bm.shutdown()
+    except Exception as e:
+        log.warning("Error during BrowserManager shutdown: %s", e)
+
+
+app = FastAPI(title="Conversational AI Parts Sourcing Agent API", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -216,6 +238,15 @@ def instrument_session(thread_id: str, session: Session):
                 sse_manager.publish(
                     thread_id,
                     {
+                        "type": "supplier_start",
+                        "supplier": s_title,
+                        "vendor": v_name,
+                        "status": "searching",
+                    },
+                )
+                sse_manager.publish(
+                    thread_id,
+                    {
                         "type": "log_event",
                         "message": f"Starting product search on {s_title} for {vendor_profile.part}",
                         "level": "info",
@@ -244,15 +275,27 @@ def instrument_session(thread_id: str, session: Session):
                     )
                     listings_dict = relevance.rank_listings(listings_dict, price_order="asc")
 
-                    if outcome.status in ("failed", "extraction_failed"):
-                        err_msg = outcome.message or f"{s_title} search failed."
+                    if outcome.status in ("failed", "extraction_failed", "timeout", "blocked"):
+                        status_label = "Timeout" if outcome.status == "timeout" else "Blocked" if outcome.status == "blocked" else "Failed"
+                        err_msg = outcome.message or f"{s_title} search {status_label.lower()}."
                         sse_manager.publish(
                             thread_id,
                             {
                                 "type": "adapter_failed",
                                 "supplier": s_title,
                                 "vendor": v_name,
-                                "status": "Failed",
+                                "status": status_label,
+                                "error": err_msg,
+                                "elapsed_seconds": elapsed,
+                            },
+                        )
+                        sse_manager.publish(
+                            thread_id,
+                            {
+                                "type": "supplier_error",
+                                "supplier": s_title,
+                                "vendor": v_name,
+                                "status": status_label.lower(),
                                 "error": err_msg,
                                 "elapsed_seconds": elapsed,
                             },
@@ -261,8 +304,8 @@ def instrument_session(thread_id: str, session: Session):
                             thread_id,
                             {
                                 "type": "log_event",
-                                "message": f"{s_title} search failed: {err_msg}",
-                                "level": "error",
+                                "message": f"{s_title} search {status_label.lower()}: {err_msg}",
+                                "level": "warning" if outcome.status == "timeout" else "error",
                             },
                         )
                     else:
@@ -277,6 +320,20 @@ def instrument_session(thread_id: str, session: Session):
                                 "results": listings_dict,
                                 "source_url": outcome.source_url,
                                 "message": outcome.message,
+                                "elapsed_seconds": elapsed,
+                            },
+                        )
+                        sse_manager.publish(
+                            thread_id,
+                            {
+                                "type": "supplier_result",
+                                "supplier": s_title,
+                                "vendor": v_name,
+                                "status": "ok",
+                                "product_count": len(listings_dict),
+                                "products_found": len(listings_dict),
+                                "results": listings_dict,
+                                "source_url": outcome.source_url,
                                 "elapsed_seconds": elapsed,
                             },
                         )
@@ -300,6 +357,17 @@ def instrument_session(thread_id: str, session: Session):
                             "supplier": s_title,
                             "vendor": v_name,
                             "status": "Failed",
+                            "error": str(exc),
+                            "elapsed_seconds": elapsed,
+                        },
+                    )
+                    sse_manager.publish(
+                        thread_id,
+                        {
+                            "type": "supplier_error",
+                            "supplier": s_title,
+                            "vendor": v_name,
+                            "status": "failed",
                             "error": str(exc),
                             "elapsed_seconds": elapsed,
                         },
@@ -577,6 +645,15 @@ async def start_chat(payload: StartRequest):
                             "profile": profile_dict,
                         },
                     )
+                    sse_manager.publish(
+                        thread_id,
+                        {
+                            "type": "complete",
+                            "combined_count": len(outcome.get("listings") or []),
+                            "total_elapsed": outcome.get("total_elapsed", 0.0),
+                            "outcome": outcome,
+                        },
+                    )
                     # Sourcing completed; release browser memory immediately
                     try:
                         await close_session(thread_id)
@@ -584,6 +661,10 @@ async def start_chat(payload: StartRequest):
                         pass
             except Exception as e:
                 log.exception("Error in convo.start")
+                try:
+                    await close_session(thread_id)
+                except Exception:
+                    pass
                 sse_manager.publish(
                     thread_id,
                     {"type": "log_event", "message": f"Error: {e}", "level": "error"},
@@ -677,6 +758,15 @@ async def reply_chat(payload: ReplyRequest):
                             "profile": profile_dict,
                         },
                     )
+                    sse_manager.publish(
+                        thread_id,
+                        {
+                            "type": "complete",
+                            "combined_count": len(outcome.get("listings") or []),
+                            "total_elapsed": outcome.get("total_elapsed", 0.0),
+                            "outcome": outcome,
+                        },
+                    )
                     # Sourcing completed; release browser memory immediately
                     try:
                         await close_session(thread_id)
@@ -684,6 +774,10 @@ async def reply_chat(payload: ReplyRequest):
                         pass
             except Exception as e:
                 log.exception("Error in convo.reply")
+                try:
+                    await close_session(thread_id)
+                except Exception:
+                    pass
                 sse_manager.publish(
                     thread_id,
                     {"type": "log_event", "message": f"Error: {e}", "level": "error"},
@@ -696,6 +790,29 @@ async def reply_chat(payload: ReplyRequest):
         asyncio.create_task(run_reply())
 
     return {"status": "ok", "thread_id": thread_id}
+
+
+@app.post("/api/chat/cancel")
+async def cancel_chat(payload: Dict[str, str]):
+    """Cancel an active customer search session, closing its browser context immediately."""
+    thread_id = payload.get("thread_id")
+    if thread_id:
+        log.info("Canceling active sourcing session: %s", thread_id)
+        try:
+            await close_session(thread_id)
+        except Exception as e:
+            log.warning("Error closing session %s on cancel: %s", thread_id, e)
+        CONVERSATIONS.pop(thread_id, None)
+        SESSION_LOCKS.pop(thread_id, None)
+        sse_manager.publish(
+            thread_id,
+            {"type": "log_event", "message": "Search session canceled by user.", "level": "warning"},
+        )
+        sse_manager.publish(
+            thread_id,
+            {"type": "error", "error": "Search session canceled"},
+        )
+    return {"status": "ok", "message": "Session canceled"}
 
 
 @app.post("/api/transcribe")
@@ -717,7 +834,7 @@ async def transcribe_audio(
             f_in.write(content)
             temp_in = f_in.name
 
-        # Convert to 16kHz mono WAV using ffmpeg
+        # Convert to 16kHz mono WAV using ffmpeg if available
         temp_wav = temp_in + ".wav"
         cmd = [
             "ffmpeg",
@@ -732,12 +849,15 @@ async def transcribe_audio(
             "pcm_s16le",
             temp_wav,
         ]
-        proc = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-        if proc.returncode != 0 or not Path(temp_wav).exists():
-            # If conversion failed, try reading raw content if it's already wav
+        try:
+            proc = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            if proc.returncode != 0 or not Path(temp_wav).exists():
+                wav_bytes = content
+            else:
+                wav_bytes = Path(temp_wav).read_bytes()
+        except FileNotFoundError:
+            # ffmpeg not installed on host, use content directly
             wav_bytes = content
-        else:
-            wav_bytes = Path(temp_wav).read_bytes()
 
         # Call existing voice transcription logic
         transcript = voice.transcribe(wav_bytes, context=context)

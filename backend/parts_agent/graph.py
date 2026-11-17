@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import operator
+import os
 import re
 import time
 from dataclasses import asdict, dataclass, field
@@ -29,7 +30,9 @@ from langgraph.graph import END, START, StateGraph
 from . import llm, variants
 from .auto_dukan import AutoDukanAdapter
 from .boodmo import BoodmoAdapter
+from .browser_manager import get_browser_manager
 from .models import NeedInput, SearchOutcome, VehicleProfile
+from .perf_logger import perf_monitor
 
 log = logging.getLogger(__name__)
 RUNS = Path(__file__).resolve().parent.parent / "runs"
@@ -47,6 +50,7 @@ class Session:
     autodukan_adapter: AutoDukanAdapter
     announce: Callable[[str], None]   # short spoken/printed status lines
     require_confirmation: bool = False
+    on_supplier_completed: Optional[Callable[[SearchOutcome], None]] = None
 
     @property
     def adapters(self) -> dict[str, object]:
@@ -63,11 +67,14 @@ def open_session(thread_id: str, *, headless: bool = True,
                  progress: Callable[[str], None] | None = None,
                  announce: Callable[[str], None] | None = None,
                  record_video_dir: Optional[str] = None,
-                 require_confirmation: bool = False) -> Session:
-    s = Session(boodmo_adapter=BoodmoAdapter(headless=headless, progress=progress, record_video_dir=record_video_dir),
-                autodukan_adapter=AutoDukanAdapter(headless=headless, progress=progress, record_video_dir=record_video_dir),
+                 require_confirmation: bool = False,
+                 on_supplier_completed: Optional[Callable[[SearchOutcome], None]] = None) -> Session:
+    bm = get_browser_manager()
+    s = Session(boodmo_adapter=BoodmoAdapter(headless=headless, progress=progress, record_video_dir=record_video_dir, session_id=thread_id, browser_manager=bm),
+                autodukan_adapter=AutoDukanAdapter(headless=headless, progress=progress, record_video_dir=record_video_dir, session_id=thread_id, browser_manager=bm),
                 announce=announce or (lambda t: None),
-                require_confirmation=require_confirmation)
+                require_confirmation=require_confirmation,
+                on_supplier_completed=on_supplier_completed)
     SESSIONS[thread_id] = s
     return s
 
@@ -91,6 +98,10 @@ async def close_session(thread_id: str):
         for adapter, result in zip(adapters, results):
             if isinstance(result, Exception):
                 log.warning("Could not close %s browser session: %s", adapter.name, result)
+    try:
+        await get_browser_manager().close_session(thread_id)
+    except Exception as e:
+        log.warning("Error closing session %s in BrowserManager: %s", thread_id, e)
     reap_zombie_processes()
     import gc
     gc.collect()
@@ -553,6 +564,7 @@ async def collect(state: State, config) -> State:
     profiles = _profiles_from_state(state)
     profile = profiles["boodmo"]
     s = _session(config)
+    thread_id = config["configurable"].get("thread_id", "")
     s.announce("Got the vehicle details. Checking prices and stock across all suppliers.")
 
     from . import cache_manager, relevance
@@ -566,7 +578,14 @@ async def collect(state: State, config) -> State:
         part=profile.part or profile.category,
     )
     if cached_outcomes:
-        s.announce("Instantly retrieved verified live pricing from cache.")
+        is_demo = any(o.get("is_demo") for o in cached_outcomes)
+        if is_demo:
+            s.announce("Instantly retrieved demonstration catalogue records.")
+            cache_msg = "Instantly retrieved demonstration sample records."
+        else:
+            s.announce("Instantly retrieved verified live pricing from cache.")
+            cache_msg = "Instantly retrieved from 24h verified supplier cache."
+
         # Release browser resources immediately since cache delivered instant result
         for name, adapter in list(s.adapters.items()):
             try:
@@ -600,14 +619,21 @@ async def collect(state: State, config) -> State:
             "listings": ranked,
             "vendor_outcomes": vendor_outcomes,
             "source_url": None,
-            "message": "Instantly retrieved from verified supplier cache.",
+            "message": cache_msg,
             "is_cached": True,
+            "is_demo": is_demo,
+            "source_type": "demo" if is_demo else "cached",
         }}
 
     async def collect_vendor(adapter, vendor_profile: VehicleProfile):
+        t0 = time.time()
         try:
-            return await adapter.collect(vendor_profile)
+            res = await adapter.collect(vendor_profile)
+            if not getattr(res, "elapsed_seconds", 0.0):
+                res.elapsed_seconds = round(time.time() - t0, 2)
+            return res
         except Exception as e:
+            elapsed = round(time.time() - t0, 2)
             log.exception("%s collection failed", adapter.name)
             return SearchOutcome(
                 vendor=adapter.name,
@@ -617,17 +643,22 @@ async def collect(state: State, config) -> State:
                     vendor_profile.variant,
                 ) if x),
                 listings=[],
-                source_url=getattr(adapter, "last_search_url", None),
+                source_url=getattr(adapter, "last_search_url", None) or getattr(adapter, "page", None) and getattr(adapter.page, "url", ""),
                 message=f"{adapter.name} search failed: {e}",
+                elapsed_seconds=elapsed,
             )
 
-    COLLECT_TIMEOUT = float(os.environ.get("COLLECT_TIMEOUT_SECONDS", "30.0"))
+    BOODMO_TIMEOUT = float(os.environ.get("BOODMO_TIMEOUT_SECONDS", "30.0"))
+    AUTODUKAN_TIMEOUT = float(os.environ.get("AUTODUKAN_TIMEOUT_SECONDS", "30.0"))
 
     async def collect_vendor_safe(name: str, adapter, vendor_profile: VehicleProfile):
+        timeout_val = AUTODUKAN_TIMEOUT if name == "autodukan" else BOODMO_TIMEOUT
+        t0 = time.time()
         try:
-            return await asyncio.wait_for(collect_vendor(adapter, vendor_profile), timeout=COLLECT_TIMEOUT)
+            return await asyncio.wait_for(collect_vendor(adapter, vendor_profile), timeout=timeout_val)
         except asyncio.TimeoutError:
-            log.warning("%s collection timed out after %.1fs", name, COLLECT_TIMEOUT)
+            elapsed = round(time.time() - t0, 2)
+            log.warning("%s collection timed out after %.1fs", name, timeout_val)
             return SearchOutcome(
                 vendor=name,
                 status="timeout",
@@ -636,8 +667,9 @@ async def collect(state: State, config) -> State:
                     vendor_profile.variant,
                 ) if x),
                 listings=[],
-                source_url=getattr(adapter, "last_search_url", None),
-                message=f"{name.title()} search timed out after {int(COLLECT_TIMEOUT)} seconds; continuing.",
+                source_url=getattr(adapter, "last_search_url", None) or "",
+                message=f"{name.title()} search timed out after {int(timeout_val)} seconds; continuing.",
+                elapsed_seconds=elapsed,
             )
         finally:
             try:
@@ -645,10 +677,31 @@ async def collect(state: State, config) -> State:
             except Exception as e:
                 log.warning("Error closing %s adapter: %s", name, e)
 
-    # Collect from both suppliers concurrently in parallel
-    outcomes = await asyncio.gather(
-        *(collect_vendor_safe(name, adapter, profiles[name]) for name, adapter in s.adapters.items())
-    )
+    t_start_all = time.time()
+    perf_monitor.log_search_started(thread_id, state.get("request", ""))
+
+    # Progressive concurrent supplier collection via asyncio.as_completed
+    supplier_tasks = {
+        asyncio.create_task(collect_vendor_safe(name, adapter, profiles[name])): name
+        for name, adapter in s.adapters.items()
+    }
+
+    outcomes = []
+    for fut in asyncio.as_completed(supplier_tasks.keys()):
+        outcome = await fut
+        outcomes.append(outcome)
+        elapsed = getattr(outcome, "elapsed_seconds", 0.0)
+        n_products = len(outcome.listings) if outcome.listings else 0
+        s.announce(f"{outcome.vendor.title()} completed: {n_products} parts found ({elapsed:.1f}s)")
+        if hasattr(s, "on_supplier_completed") and callable(s.on_supplier_completed):
+            try:
+                s.on_supplier_completed(outcome)
+            except Exception as cb_err:
+                log.warning("Error in on_supplier_completed callback: %s", cb_err)
+
+    total_elapsed = round(time.time() - t_start_all, 2)
+    perf_monitor.log_search_completed(thread_id, total_elapsed)
+
     vendor_outcomes = [asdict(outcome) for outcome in outcomes]
 
     # Save newly scraped live outcomes to cache for 24 hours
@@ -665,6 +718,7 @@ async def collect(state: State, config) -> State:
             )
     except Exception as exc:
         log.warning("Could not cache search outcomes: %s", exc)
+
     all_listings = [
         {**(listing.to_dict() if hasattr(listing, "to_dict") else dict(listing)), "vendor": outcome.vendor}
         for outcome in outcomes

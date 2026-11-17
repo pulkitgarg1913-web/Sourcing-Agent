@@ -31,7 +31,7 @@ def _get_db() -> sqlite3.Connection:
 
 
 def init_db():
-    """Create tables and pre-seed demo cases if empty."""
+    """Create tables, indexes, and pre-seed demo cases if empty."""
     with _get_db() as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS search_cache (
@@ -43,6 +43,8 @@ def init_db():
                 expires_at REAL
             )
         """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_search_cache_key ON search_cache (key)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_search_cache_expires ON search_cache (expires_at)")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS url_cache (
                 vendor TEXT,
@@ -54,6 +56,21 @@ def init_db():
             )
         """)
         conn.commit()
+
+        # Migrate or clean invalid/incompatible legacy 4-part non-demo records
+        try:
+            now = time.time()
+            cursor = conn.execute("SELECT key, created_at, expires_at FROM search_cache")
+            rows = cursor.fetchall()
+            for r in rows:
+                k = r["key"]
+                parts = k.split(":")
+                # If old 4-part key (maker:model:year:part) and expired, purge it
+                if len(parts) == 4 and r["expires_at"] and r["expires_at"] < now:
+                    conn.execute("DELETE FROM search_cache WHERE key = ?", (k,))
+            conn.commit()
+        except Exception as e:
+            log.warning("Cache migration note: %s", e)
 
     # Pre-seed verified demo records if cache is new
     _preseed_demo_cache()
@@ -69,7 +86,7 @@ def normalize_term(term: Optional[str]) -> str:
 
 def make_cache_key(maker: Optional[str], model: Optional[str], year: Optional[str],
                    variant: Optional[str], part: Optional[str]) -> str:
-    """Generate a consistent cache key for vehicle + part."""
+    """Generate a consistent cache key including vehicle maker, model, year, variant, and part."""
     m_make = normalize_term(maker)
     m_model = normalize_term(model)
     # If model starts with maker (e.g. 'tata_nexon'), strip maker
@@ -77,48 +94,134 @@ def make_cache_key(maker: Optional[str], model: Optional[str], year: Optional[st
         m_model = m_model[len(m_make) + 1:]
     
     m_year = normalize_term(year)
+    m_variant = normalize_term(variant)
     m_part = normalize_term(part)
     
-    # Generic key matching car + part
-    return f"{m_make}:{m_model}:{m_year}:{m_part}"
+    # Fully qualified key: maker:model:year:variant:part
+    return f"{m_make}:{m_model}:{m_year}:{m_variant}:{m_part}"
 
 
 def get_cached_search(maker: Optional[str], model: Optional[str], year: Optional[str],
                       variant: Optional[str], part: Optional[str],
                       max_age_hours: float = 24.0) -> Optional[List[Dict[str, Any]]]:
-    """Retrieve verified search outcomes from cache if fresh."""
-    key = make_cache_key(maker, model, year, variant, part)
+    """Retrieve verified search outcomes from cache if fresh and compatible."""
+    m_make = normalize_term(maker)
+    m_model = normalize_term(model)
+    if m_make and m_model.startswith(m_make + "_"):
+        m_model = m_model[len(m_make) + 1:]
+    m_year = normalize_term(year)
+    m_variant = normalize_term(variant)
+    m_part = normalize_term(part)
+
+    exact_key = f"{m_make}:{m_model}:{m_year}:{m_variant}:{m_part}"
     now = time.time()
     try:
         with _get_db() as conn:
+            # 1. Exact 5-part match (maker:model:year:variant:part)
             row = conn.execute(
-                "SELECT data, created_at, expires_at FROM search_cache WHERE key = ?",
-                (key,)
+                "SELECT key, vehicle_label, data, created_at, expires_at FROM search_cache WHERE key = ?",
+                (exact_key,)
             ).fetchone()
-            
-            # Also try flexible key without exact year if exact year missed
-            if not row and year:
+            is_fallback = False
+            fallback_reason = ""
+
+            # 2. Backward compatibility: if variant requested but not found, try empty-variant key
+            if not row and m_variant:
+                empty_variant_key = f"{m_make}:{m_model}:{m_year}::{m_part}"
                 row = conn.execute(
-                    "SELECT data, created_at, expires_at FROM search_cache WHERE key LIKE ?",
-                    (f"{normalize_term(maker)}:{normalize_term(model)}:%:{normalize_term(part)}",)
+                    "SELECT key, vehicle_label, data, created_at, expires_at FROM search_cache WHERE key = ?",
+                    (empty_variant_key,)
                 ).fetchone()
+                if row:
+                    is_fallback = True
+                    fallback_reason = "variant_fallback"
+
+            # 3. Backward compatibility: try legacy 4-part key (maker:model:year:part)
+            if not row:
+                legacy_key = f"{m_make}:{m_model}:{m_year}:{m_part}"
+                row = conn.execute(
+                    "SELECT key, vehicle_label, data, created_at, expires_at FROM search_cache WHERE key = ?",
+                    (legacy_key,)
+                ).fetchone()
+                if row:
+                    is_fallback = True
+                    fallback_reason = "legacy_key_fallback"
+
+            # 4. Year fallback: only if exact year missed and maker/model match
+            if not row and m_year:
+                # Search strictly for same maker and model and part
+                cursor = conn.execute(
+                    "SELECT key, vehicle_label, data, created_at, expires_at FROM search_cache WHERE key LIKE ?",
+                    (f"{m_make}:{m_model}:%:{m_part}",)
+                )
+                for candidate in cursor.fetchall():
+                    c_key = candidate["key"]
+                    c_parts = c_key.split(":")
+                    if len(c_parts) == 5 and c_parts[0] == m_make and c_parts[1] == m_model:
+                        c_variant = c_parts[3]
+                        # Incompatible variant must NEVER be served
+                        if m_variant and c_variant and c_variant != m_variant:
+                            continue
+                        row = candidate
+                        is_fallback = True
+                        fallback_reason = "year_fallback"
+                        break
+                    elif len(c_parts) == 4 and c_parts[0] == m_make and c_parts[1] == m_model:
+                        # Legacy 4-part key without variant
+                        row = candidate
+                        is_fallback = True
+                        fallback_reason = "year_fallback"
+                        break
 
             if row:
                 created_at = row["created_at"]
-                if now - created_at < max_age_hours * 3600:
-                    raw_data = json.loads(row["data"])
-                    age_minutes = int((now - created_at) / 60)
-                    log.info("Cache HIT for %s (cached %d mins ago)", key, age_minutes)
-                    # Mark data with cache freshness notice
-                    for outcome in raw_data:
-                        outcome["is_cached"] = True
-                        outcome["cached_minutes_ago"] = age_minutes
+                expires_at = row["expires_at"]
+                # Enforce TTL (either from expires_at column or max_age_hours)
+                is_fresh = (now < expires_at) if expires_at else (now - created_at < max_age_hours * 3600)
+                if not is_fresh and (now - created_at >= max_age_hours * 3600):
+                    log.info("Cache EXPIRED for %s", row["key"])
+                    return None
+
+                raw_data = json.loads(row["data"])
+                age_minutes = max(0, int((now - created_at) / 60))
+                matched_key = row["key"]
+                is_demo = any(o.get("is_demo") for o in raw_data) or (expires_at and (expires_at - created_at > 86400 * 2))
+
+                log.info("Cache HIT for %s via key '%s' (is_demo=%s, age=%dm)", exact_key, matched_key, is_demo, age_minutes)
+
+                for outcome in raw_data:
+                    outcome["is_cached"] = True
+                    outcome["cached_minutes_ago"] = age_minutes
+
+                    if is_demo:
+                        outcome["is_demo"] = True
+                        outcome["source_type"] = "demo"
+                        outcome["message"] = outcome.get("message") or f"Demonstration catalogue record for {row['vehicle_label'] or ''}."
                         for l in outcome.get("listings", []):
                             l.setdefault("notes", [])
-                            l["notes"].append(f"Instant cache result (verified live {age_minutes}m ago)")
-                    return raw_data
-                else:
-                    log.info("Cache EXPIRED for %s", key)
+                            # Never claim demo records are verified live supplier pricing
+                            l["notes"].append("Demonstration sample record (static catalog pricing)")
+                    else:
+                        outcome["is_demo"] = False
+                        outcome["source_type"] = "cached"
+                        for l in outcome.get("listings", []):
+                            l.setdefault("notes", [])
+                            l["notes"].append(f"Cached search result (scraped {age_minutes}m ago)")
+
+                    # If retrieved through fallback (year or variant generic), mark fitment as unverified
+                    if is_fallback:
+                        for l in outcome.get("listings", []):
+                            if fallback_reason == "year_fallback":
+                                l["fitment"] = "unverified"
+                                l["fitment_basis"] = f"Unverified fitment: retrieved via year fallback for {maker} {model}"
+                                l["notes"].append("Fitment unverified: served from year fallback, verify compatibility before purchase")
+                            elif fallback_reason in ("variant_fallback", "legacy_key_fallback"):
+                                if m_variant:
+                                    l["fitment"] = "unverified"
+                                    l["fitment_basis"] = f"Unverified fitment: exact variant {variant} not verified in cache entry"
+                                    l["notes"].append(f"Fitment unverified: exact variant '{variant}' not checked in cached record")
+
+                return raw_data
     except Exception as exc:
         log.warning("Cache lookup failed: %s", exc)
     return None
@@ -127,7 +230,7 @@ def get_cached_search(maker: Optional[str], model: Optional[str], year: Optional
 def save_cached_search(maker: Optional[str], model: Optional[str], year: Optional[str],
                        variant: Optional[str], part: Optional[str],
                        outcomes: List[Any], ttl_hours: float = 24.0) -> None:
-    """Store search outcomes into cache."""
+    """Store live search outcomes into cache."""
     key = make_cache_key(maker, model, year, variant, part)
     now = time.time()
     expires_at = now + (ttl_hours * 3600)
@@ -135,16 +238,12 @@ def save_cached_search(maker: Optional[str], model: Optional[str], year: Optiona
     # Ensure serializable dicts
     serialized = []
     for o in outcomes:
-        if hasattr(o, "to_dict"):
-            serialized.append(o.to_dict())
-        elif isinstance(o, dict):
-            serialized.append(o)
-        else:
-            try:
-                from dataclasses import asdict
-                serialized.append(asdict(o))
-            except Exception:
-                serialized.append(dict(o))
+        d = o.to_dict() if hasattr(o, "to_dict") else dict(o) if not isinstance(o, dict) else o
+        d_copy = dict(d)
+        d_copy["is_cached"] = True
+        d_copy["is_demo"] = False
+        d_copy["source_type"] = "cached"
+        serialized.append(d_copy)
 
     try:
         with _get_db() as conn:
@@ -153,7 +252,7 @@ def save_cached_search(maker: Optional[str], model: Optional[str], year: Optiona
                 VALUES (?, ?, ?, ?, ?, ?)
             """, (
                 key,
-                f"{maker or ''} {model or ''} {year or ''}".strip(),
+                f"{maker or ''} {model or ''} {year or ''} {variant or ''}".strip(),
                 part or "",
                 json.dumps(serialized),
                 now,
@@ -570,6 +669,9 @@ def _preseed_demo_cache():
         with _get_db() as conn:
             for rec in demo_records:
                 for outcome in rec["outcomes"]:
+                    outcome["is_demo"] = True
+                    outcome["is_cached"] = True
+                    outcome["source_type"] = "demo"
                     for l in outcome.get("listings", []):
                         l.setdefault("match", "exact")
                         l.setdefault("best_offer", {
@@ -578,7 +680,15 @@ def _preseed_demo_cache():
                             "dispatch": "24-48 hrs"
                         })
                 data_json = json.dumps(rec["outcomes"])
+                # Register both 4-part legacy keys and 5-part normalized keys
+                keys_to_store = set()
                 for k in rec["keys"]:
+                    keys_to_store.add(k)
+                    parts = k.split(":")
+                    if len(parts) == 4:
+                        # Add 5-part key with empty variant (maker:model:year::part)
+                        keys_to_store.add(f"{parts[0]}:{parts[1]}:{parts[2]}::{parts[3]}")
+                for k in keys_to_store:
                     conn.execute("""
                         INSERT OR REPLACE INTO search_cache (key, vehicle_label, part_name, data, created_at, expires_at)
                         VALUES (?, ?, ?, ?, ?, ?)

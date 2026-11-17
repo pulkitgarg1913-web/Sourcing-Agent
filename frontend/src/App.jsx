@@ -144,6 +144,7 @@ export default function App() {
         }
         break
 
+      case "supplier_start":
       case "adapter_progress":
         setSuppliers((prev) =>
           prev.map((s) => {
@@ -162,7 +163,9 @@ export default function App() {
         setOverallStatus("Searching")
         break
 
-      case "adapter_completed":
+      case "supplier_result":
+      case "adapter_completed": {
+        const prodCount = event.products_found !== undefined ? event.products_found : (event.product_count || 0)
         // 1. Update supplier status
         setSuppliers((prev) =>
           prev.map((s) => {
@@ -171,8 +174,8 @@ export default function App() {
                 ...s,
                 status: "Completed",
                 progress: 100,
-                currentOperation: `Completed: ${event.products_found} parts found`,
-                productsExtracted: event.products_found,
+                currentOperation: `Completed: ${prodCount} parts found`,
+                productsExtracted: prodCount,
                 elapsedSeconds: event.elapsed_seconds,
               }
             }
@@ -198,12 +201,14 @@ export default function App() {
             supplier: event.supplier,
             vendor: event.vendor,
             status: "completed",
-            products_found: event.products_found,
+            products_found: prodCount,
             elapsed_seconds: event.elapsed_seconds,
           },
         ])
         break
+      }
 
+      case "supplier_error":
       case "adapter_failed":
         // Update failed supplier
         setSuppliers((prev) =>
@@ -236,6 +241,7 @@ export default function App() {
         ])
         break
 
+      case "complete":
       case "search_summary":
         if (event.summary) {
           setMessages((prev) => [
