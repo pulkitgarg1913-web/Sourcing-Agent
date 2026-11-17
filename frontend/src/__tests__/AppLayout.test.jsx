@@ -29,7 +29,7 @@ describe("Two-Panel App Workspace Layout", () => {
     // Right Panel headers & sections
     expect(screen.getByText("Supplier Search Status")).toBeDefined()
     expect(screen.getByText("Execution Activity")).toBeDefined()
-    expect(screen.getByText("Procurement Recommendation")).toBeDefined()
+    expect(screen.queryByText("Procurement Recommendation")).toBeNull()
 
     // Both supplier catalogs rendered separately
     expect(screen.getByText("Boodmo Verified Catalog")).toBeDefined()

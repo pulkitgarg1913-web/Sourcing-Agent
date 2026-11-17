@@ -17,10 +17,7 @@ import {
   Info,
   Wrench,
   Tag,
-  Award,
   Truck,
-  Copy,
-  Check,
   Columns,
   Rows,
 } from "lucide-react"
@@ -38,7 +35,6 @@ export default function ProductResults({
   const [searchQuery, setSearchQuery] = useState("")
   const [showAccessoriesMap, setShowAccessoriesMap] = useState({}) // { boodmo: bool, autodukan: bool }
   const [layoutMode, setLayoutMode] = useState("stacked") // stacked | side_by_side
-  const [copied, setCopied] = useState(false)
 
   // Filter listings by relevance, stock & search text
   const filterListings = (items) => {
@@ -169,102 +165,6 @@ export default function ProductResults({
     }
     return counts
   }, [listings])
-
-  // Procurement Executive Recommendation Engine
-  const procurementSummary = useMemo(() => {
-    const getCheapestInStock = (vendorItems) => {
-      const inStock = vendorItems.filter(
-        (l) => l.available === true && l.price !== null && l.price !== undefined
-      )
-      if (!inStock.length) return null
-      return inStock.reduce(
-        (min, curr) => (curr.price < min.price ? curr : min),
-        inStock[0]
-      )
-    }
-
-    const boodmoBest = getCheapestInStock(boodmoRaw)
-    const autodukanBest = getCheapestInStock(autodukanRaw)
-
-    let recommendation = ""
-    let recommendedVendor = null
-    let savings = null
-
-    if (boodmoBest && autodukanBest) {
-      if (boodmoBest.price < autodukanBest.price) {
-        savings = autodukanBest.price - boodmoBest.price
-        recommendation = `Source from Boodmo: Save ${formatRupees(
-          savings
-        )} with ${boodmoBest.brand} ${boodmoBest.title} @ ${formatRupees(
-          boodmoBest.price
-        )} (Dispatch: ${boodmoBest.best_offer?.dispatch || "Standard"}).`
-        recommendedVendor = "boodmo"
-      } else if (autodukanBest.price < boodmoBest.price) {
-        savings = boodmoBest.price - autodukanBest.price
-        recommendation = `Source from AutoDukan: Save ${formatRupees(
-          savings
-        )} with ${autodukanBest.brand} ${autodukanBest.title} @ ${formatRupees(
-          autodukanBest.price
-        )}.`
-        recommendedVendor = "autodukan"
-      } else {
-        recommendation = `Both suppliers have in-stock options at ${formatRupees(
-          boodmoBest.price
-        )}. Recommend Boodmo for direct seller verification.`
-        recommendedVendor = "boodmo"
-      }
-    } else if (boodmoBest) {
-      recommendation = `Source from Boodmo: In stock @ ${formatRupees(
-        boodmoBest.price
-      )} (${boodmoBest.brand} ${boodmoBest.title}). AutoDukan has no verified stock.`
-      recommendedVendor = "boodmo"
-    } else if (autodukanBest) {
-      recommendation = `Source from AutoDukan: In stock @ ${formatRupees(
-        autodukanBest.price
-      )} (${autodukanBest.brand} ${autodukanBest.title}). Boodmo has no verified stock.`
-      recommendedVendor = "autodukan"
-    } else if (listings.length > 0) {
-      recommendation =
-        "Both suppliers returned catalogue listings, but no sellers currently show verified live stock. Check seller lead times or alternate trims."
-    } else {
-      recommendation =
-        "Awaiting supplier extraction. Once both adapters finish, recommended sourcing will display here automatically."
-    }
-
-    const totalFound = listings.filter((l) => l.relevance !== "IRRELEVANT").length
-    const verifiedFitmentCount = listings.filter(
-      (l) => l.relevance !== "IRRELEVANT" && l.fitment === "verified"
-    ).length
-    const inStockCount = listings.filter(
-      (l) => l.relevance !== "IRRELEVANT" && l.available === true
-    ).length
-    const overallCheapest =
-      boodmoBest && autodukanBest
-        ? boodmoBest.price <= autodukanBest.price
-          ? boodmoBest
-          : autodukanBest
-        : boodmoBest || autodukanBest || null
-
-    return {
-      boodmoBest,
-      autodukanBest,
-      recommendation,
-      recommendedVendor,
-      savings,
-      totalFound,
-      verifiedFitmentCount,
-      inStockCount,
-      overallCheapest,
-    }
-  }, [boodmoRaw, autodukanRaw, listings])
-
-  const copyRecommendation = () => {
-    if (procurementSummary.recommendation) {
-      navigator.clipboard.writeText(procurementSummary.recommendation)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    }
-  }
 
   // Helper to render a table row
   const renderTableRow = (item, idx) => {
@@ -639,123 +539,7 @@ export default function ProductResults({
 
   return (
     <div id="product-results-section" className="space-y-4">
-      {/* 1. Procurement Executive Recommendation Card */}
-      <div className="bg-white rounded-xl p-4 sm:p-5 border border-slate-200 shadow-xs">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 pb-3 border-b border-slate-100">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-700 flex items-center justify-center border border-emerald-200 shrink-0">
-              <Award className="w-4 h-4" />
-            </div>
-            <div>
-              <h3 className="text-sm font-semibold text-slate-900">
-                Procurement Recommendation
-              </h3>
-              <p className="text-xs text-slate-500">
-                Supplier comparison summary for mechanic handover
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={copyRecommendation}
-              className="inline-flex items-center gap-1.5 text-xs bg-slate-50 hover:bg-slate-100 text-slate-700 px-3 py-1.5 rounded-lg border border-slate-200 transition-colors font-medium active:scale-95 cursor-pointer shadow-2xs"
-              title="Copy recommendation text to clipboard"
-            >
-              {copied ? (
-                <>
-                  <Check className="w-3.5 h-3.5 text-emerald-600" />
-                  <span className="text-emerald-700 font-semibold">Copied!</span>
-                </>
-              ) : (
-                <>
-                  <Copy className="w-3.5 h-3.5 text-slate-500" />
-                  <span>Copy for Mechanic</span>
-                </>
-              )}
-            </button>
-          </div>
-        </div>
-
-        {/* Recommendation Statement */}
-        <div className="mt-3 p-3 bg-slate-50 rounded-lg border border-slate-200/80">
-          <p className="text-xs sm:text-sm font-medium text-slate-800 leading-relaxed">
-            {procurementSummary.recommendation}
-          </p>
-        </div>
-
-        {/* Procurement KPI Summary Badges */}
-        <div className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-          <div className="bg-slate-50 border border-slate-200 rounded-lg p-2.5">
-            <span className="text-[10px] uppercase font-semibold text-slate-400 block">Total Found</span>
-            <span className="text-sm font-bold text-slate-900">{procurementSummary.totalFound} items</span>
-          </div>
-          <div className="bg-emerald-50/60 border border-emerald-200 rounded-lg p-2.5">
-            <span className="text-[10px] uppercase font-semibold text-emerald-600 block">Verified Fitment</span>
-            <span className="text-sm font-bold text-emerald-800">{procurementSummary.verifiedFitmentCount} parts</span>
-          </div>
-          <div className="bg-blue-50/60 border border-blue-200 rounded-lg p-2.5">
-            <span className="text-[10px] uppercase font-semibold text-blue-600 block">In-Stock</span>
-            <span className="text-sm font-bold text-blue-800">{procurementSummary.inStockCount} available</span>
-          </div>
-          <div className="bg-amber-50/60 border border-amber-200 rounded-lg p-2.5">
-            <span className="text-[10px] uppercase font-semibold text-amber-700 block">Cheapest Available</span>
-            <span className="text-sm font-bold text-slate-900">
-              {procurementSummary.overallCheapest ? formatRupees(procurementSummary.overallCheapest.price) : "—"}
-            </span>
-          </div>
-        </div>
-
-        {/* Quick Side-by-Side Comparison Pills */}
-        <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-          {/* Boodmo Snapshot */}
-          <div className="bg-white rounded-lg p-3 border border-slate-200 flex items-center justify-between">
-            <div>
-              <span className="font-semibold text-slate-800 block">Boodmo Marketplace</span>
-              <span className="text-slate-500 text-[11px]">
-                {procurementSummary.boodmoBest
-                  ? `${procurementSummary.boodmoBest.brand} (${procurementSummary.boodmoBest.best_offer?.dispatch || "0-3 days"})`
-                  : "No live stock in catalog"}
-              </span>
-            </div>
-            <div className="text-right">
-              <span className="text-sm font-bold text-slate-900 block">
-                {procurementSummary.boodmoBest
-                  ? formatRupees(procurementSummary.boodmoBest.price)
-                  : "—"}
-              </span>
-              <span className="text-[10px] text-slate-400">
-                {boodmoFiltered.length} verified parts
-              </span>
-            </div>
-          </div>
-
-          {/* AutoDukan Snapshot */}
-          <div className="bg-white rounded-lg p-3 border border-slate-200 flex items-center justify-between">
-            <div>
-              <span className="font-semibold text-slate-800 block">AutoDukan Distributor</span>
-              <span className="text-slate-500 text-[11px]">
-                {procurementSummary.autodukanBest
-                  ? `${procurementSummary.autodukanBest.brand}`
-                  : "No live stock in catalog"}
-              </span>
-            </div>
-            <div className="text-right">
-              <span className="text-sm font-bold text-slate-900 block">
-                {procurementSummary.autodukanBest
-                  ? formatRupees(procurementSummary.autodukanBest.price)
-                  : "—"}
-              </span>
-              <span className="text-[10px] text-slate-400">
-                {autodukanFiltered.length} verified parts
-              </span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* 2. Global Controls Bar: Supplier Selection, View Mode, Filters & Search */}
+      {/* Global Controls Bar: Supplier Selection, View Mode, Filters & Search */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-3.5 sm:p-4 space-y-3">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-3 border-b border-slate-100">
           {/* Supplier Navigation Tabs */}

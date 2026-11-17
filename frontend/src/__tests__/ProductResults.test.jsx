@@ -80,7 +80,7 @@ describe("ProductResults Component", () => {
     expect(screen.getByText("OEM Brake Pad Set")).toBeDefined()
   })
 
-  it("calculates exact procurement recommendation and savings", () => {
+  it("confirms procurement recommendation section is completely removed", () => {
     render(
       <ProductResults
         listings={sampleListings}
@@ -90,9 +90,12 @@ describe("ProductResults Component", () => {
       />
     )
 
-    // Boodmo cheapest is KBX Guide Pin Kit @ ₹350. AutoDukan is OEM @ ₹1,450.
-    // Savings = 1,450 - 350 = ₹1,100.
-    expect(screen.getByText(/Source from Boodmo: Save ₹1,100/i)).toBeDefined()
+    // Procurement Recommendation, comparison summaries, and Copy for Mechanic must not exist
+    expect(screen.queryByText("Procurement Recommendation")).toBeNull()
+    expect(screen.queryByText(/Source from Boodmo/i)).toBeNull()
+    expect(screen.queryByText(/Copy for Mechanic/i)).toBeNull()
+    expect(screen.queryByText(/Boodmo Marketplace/i)).toBeNull()
+    expect(screen.queryByText(/AutoDukan Distributor/i)).toBeNull()
   })
 
   it("filters listings when search query is typed", () => {
@@ -391,10 +394,10 @@ describe("ProductResults Component", () => {
     expect(headerTexts).toContain("Fitment & Basis")
     expect(headerTexts).toContain("Action")
 
-    // Check KPI metrics
-    expect(screen.getByText("Total Found")).toBeDefined()
-    expect(screen.getByText("Verified Fitment")).toBeDefined()
-    expect(screen.getByText("In-Stock")).toBeDefined()
-    expect(screen.getByText("Cheapest Available")).toBeDefined()
+    // Ensure removed KPI metrics are not rendered
+    expect(screen.queryByText("Total Found")).toBeNull()
+    expect(screen.queryByText("Verified Fitment")).toBeNull()
+    expect(screen.queryByText("In-Stock")).toBeNull()
+    expect(screen.queryByText("Cheapest Available")).toBeNull()
   })
 })
