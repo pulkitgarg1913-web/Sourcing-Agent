@@ -637,8 +637,12 @@ class AutoDukanAdapter:
         clean_model = model
         if make and model.lower().startswith(make.lower()):
             clean_model = model[len(make):].strip()
-        terms = [t for t in [make, clean_model, part] if t]
-        query = " ".join(terms).strip()
+
+        if self._car_model_id and part:
+            query = part
+        else:
+            terms = [t for t in [make, clean_model, part] if t]
+            query = " ".join(terms).strip()
         self.progress(f"Falling back to search for '{query}' on AutoDukan")
         qs = f"search={urllib.parse.quote_plus(query)}&search_term={urllib.parse.quote_plus(query)}"
         if self._car_model_id:
@@ -653,6 +657,16 @@ class AutoDukanAdapter:
     async def advance(self, profile: VehicleProfile) -> Optional[NeedInput]:
         """Resolve AutoDukan's own category and vehicle selector before search."""
         await self.start()
+        need = await self.resolve_category(profile)
+        if need:
+            if profile.hints.get("commercial_warning"):
+                sig = f"{profile.maker}:{profile.model}:{profile.year}:{profile.variant}:{profile.category}"
+                await self._search_fallback(profile)
+                self._advanced_signature = sig
+                self._advanced_ok = True
+                return None
+            return need
+
         sig = f"{profile.maker}:{profile.model}:{profile.year}:{profile.variant}:{profile.category}"
         if (self._advanced_signature == sig and self._advanced_ok
                 and self._vehicle_confirmed and self._category_confirmed
@@ -667,14 +681,6 @@ class AutoDukanAdapter:
             self._advanced_signature = sig
             self._advanced_ok = True
             return None
-        need = await self.resolve_category(profile)
-        if need:
-            if profile.hints.get("commercial_warning"):
-                await self._search_fallback(profile)
-                self._advanced_signature = sig
-                self._advanced_ok = True
-                return None
-            return need
 
         if (self._vehicle_confirmed and self._category_confirmed
                 and self._confirmed_vehicle == _vehicle_label(profile)
@@ -1219,25 +1225,37 @@ class AutoDukanAdapter:
         self._category_leaf_options = []
 
         # If vehicle was confirmed and car_model_id is available, stay in the vehicle-filtered catalog!
-        slug = self._slug_for_category(requested)
-        if self._car_model_id and slug:
-            target_url = f"{self.base_url}/products-list/{slug}?car_model_id={self._car_model_id}"
+        if self._car_model_id:
+            import urllib.parse
+            # 1. Query AutoDukan's vehicle-filtered catalog directly with the part/category name
+            target_url = f"{self.base_url}/products-list?car_model_id={self._car_model_id}&search={urllib.parse.quote_plus(requested)}&search_term={urllib.parse.quote_plus(requested)}"
             try:
                 await self._goto(target_url)
-                await self._wait(1500)
                 if self.page and not self.page.is_closed():
-                    body = ""
-                    try:
-                        body = _norm(await self.page.locator("body").inner_text(timeout=4000))
-                    except Exception:
-                        pass
-                    if "product not found" in body or (self.page and "/products-list" in self.page.url):
+                    cards = await self._read_cards()
+                    if cards:
                         self._category_confirmed = True
                         self._confirmed_category = requested
-                        self.last_search_url = self.page.url if self.page else None
+                        self.last_search_url = self.page.url
                         return True, ""
             except Exception as exc:
-                log.info("AutoDukan direct vehicle category navigation failed: %s", exc)
+                log.info("AutoDukan direct vehicle category search failed: %s", exc)
+
+            # 2. Try known slug if search didn't immediately find cards
+            slug = self._slug_for_category(requested)
+            if slug:
+                target_url = f"{self.base_url}/products-list/{slug}?car_model_id={self._car_model_id}"
+                try:
+                    await self._goto(target_url)
+                    if self.page and not self.page.is_closed():
+                        cards = await self._read_cards()
+                        if cards:
+                            self._category_confirmed = True
+                            self._confirmed_category = requested
+                            self.last_search_url = self.page.url
+                            return True, ""
+                except Exception as exc:
+                    log.info("AutoDukan direct vehicle category slug navigation failed: %s", exc)
 
         path = self._category_paths.get(_norm(requested)) or self._path_for_category(requested)
 
@@ -1320,12 +1338,11 @@ class AutoDukanAdapter:
             if not self.page or self.page.is_closed():
                 return []
             await self.page.wait_for_selector(
-                'a[href*="/product/"], a[href*="/products/"], [class*="product-card"], button:has-text("Add to Cart"), button:has-text("Add To Cart"), .no-product-found, [class*="no-product"]',
-                timeout=7000
+                'a[href*="/product/"], [class*="product-card"], .no-product-found, [class*="no-product"]',
+                timeout=4000
             )
         except Exception:
             pass
-        await self._wait(800)
 
         for attempt in range(2):
             try:
@@ -1340,7 +1357,10 @@ class AutoDukanAdapter:
                 const anchors = [...document.querySelectorAll('a[href]')];
                 const out = [];
                 const seen = new Set();
+                const MAX_ITEMS = 40;
+
                 for (const a of anchors) {
+                    if (out.length >= MAX_ITEMS) break;
                     const href = abs(a.getAttribute('href'));
                     const aria = clean(a.getAttribute('aria-label'));
                     const inner = clean(a.innerText);
@@ -1543,7 +1563,6 @@ class AutoDukanAdapter:
         if getattr(self, "_using_search_fallback", False):
             vehicle = f"{profile.maker or profile.hints.get('make') or ''} {profile.model or profile.hints.get('model') or ''}".strip() or "the requested vehicle"
             self.progress(f"Reading AutoDukan search bar results for {vehicle}")
-            await self._wait(900)
             cards = await self._read_cards()
             if not cards:
                 make = (profile.maker or profile.hints.get('make') or '').strip()
@@ -1554,12 +1573,20 @@ class AutoDukanAdapter:
                     clean_model = model[len(make):].strip()
 
                 candidate_queries = []
-                if clean_model and part:
-                    candidate_queries.append(f"{clean_model} {part}")
-                if clean_model and profile.category and profile.category != part:
-                    candidate_queries.append(f"{clean_model} {profile.category}")
-                if part and part != "part":
-                    candidate_queries.append(part)
+                if self._car_model_id:
+                    if part and part != "part":
+                        candidate_queries.append(part)
+                    if clean_model and part:
+                        candidate_queries.append(f"{clean_model} {part}")
+                    if clean_model and profile.category and profile.category != part:
+                        candidate_queries.append(f"{clean_model} {profile.category}")
+                else:
+                    if clean_model and part:
+                        candidate_queries.append(f"{clean_model} {part}")
+                    if clean_model and profile.category and profile.category != part:
+                        candidate_queries.append(f"{clean_model} {profile.category}")
+                    if part and part != "part":
+                        candidate_queries.append(part)
 
                 import urllib.parse
                 for cand_query in candidate_queries:
@@ -1575,6 +1602,7 @@ class AutoDukanAdapter:
 
             listings: list[Listing] = []
             seen: set[str] = set()
+            is_verified = bool(self._vehicle_confirmed and (self._car_model_id or (self._category_confirmed and not getattr(self, "_using_search_fallback", False))))
             for card in cards:
                 url = urljoin(self.base_url + "/", card.get("url") or "")
                 title = _clean(card.get("title"))
@@ -1589,8 +1617,12 @@ class AutoDukanAdapter:
                     price=_price(card.get("priceText")),
                     mrp=_price(card.get("mrpText")),
                     url=url,
-                    fitment="unverified",
-                    fitment_basis=f"AutoDukan keyword search bar fallback for '{vehicle}'",
+                    fitment="verified" if is_verified else "unverified",
+                    fitment_basis=(
+                        f"AutoDukan verified vehicle catalog for {vehicle}"
+                        if is_verified
+                        else f"AutoDukan keyword search bar fallback for '{vehicle}'"
+                    ),
                 )
                 listings.append(listing)
             elapsed = round(time.time() - t0_collect, 2)
@@ -1609,42 +1641,33 @@ class AutoDukanAdapter:
             )
 
         self.progress(f"Reading AutoDukan {profile.category} listings for {vehicle}")
-        await self._wait(900)
-        state = await self._page_state()
-        body_norm = _norm(state.get("text", ""))
-
-        cards = []
-        if "variant missing" in body_norm or "please select the car variant" in body_norm or "please select the car varient" in body_norm:
-            if not getattr(self, "_using_search_fallback", False):
+        cards = await self._read_cards()
+        if not cards and not getattr(self, "_using_search_fallback", False):
+            state = await self._page_state()
+            body_norm = _norm(state.get("text", ""))
+            if any(message in body_norm for message in ("variant missing", "please select the car variant", "please select the car varient")):
                 log.info("AutoDukan variant missing on category page; falling back to search bar for %s", vehicle)
-                await self._search_fallback(profile)
-                await self._wait(1200)
-                cards = await self._read_cards()
             else:
-                return SearchOutcome(
-                    vendor=self.name,
-                    status="no_results",
-                    vehicle_label=vehicle,
-                    listings=[],
-                    source_url=self.page.url,
-                    message=f"AutoDukan has no matching {profile.category or profile.part or 'parts'} in stock for {vehicle}.",
-                )
-        else:
-            cards = await self._read_cards()
-            if not cards and not getattr(self, "_using_search_fallback", False):
                 log.info("AutoDukan category view yielded 0 cards; falling back to search bar for %s", vehicle)
-                await self._search_fallback(profile)
-                await self._wait(1200)
-                cards = await self._read_cards()
-                if not cards:
-                    make = (profile.maker or profile.hints.get('make') or '').strip()
-                    model = (profile.model or profile.hints.get('model') or '').strip()
-                    part = (profile.part or profile.category or '').strip()
-                    clean_model = model
-                    if make and model.lower().startswith(make.lower()):
-                        clean_model = model[len(make):].strip()
+            await self._search_fallback(profile)
+            cards = await self._read_cards()
+            if not cards:
+                make = (profile.maker or profile.hints.get('make') or '').strip()
+                model = (profile.model or profile.hints.get('model') or '').strip()
+                part = (profile.part or profile.category or '').strip()
+                clean_model = model
+                if make and model.lower().startswith(make.lower()):
+                    clean_model = model[len(make):].strip()
 
-                    candidate_queries = []
+                candidate_queries = []
+                if self._car_model_id:
+                    if part and part != "part":
+                        candidate_queries.append(part)
+                    if clean_model and part:
+                        candidate_queries.append(f"{clean_model} {part}")
+                    if clean_model and profile.category and profile.category != part:
+                        candidate_queries.append(f"{clean_model} {profile.category}")
+                else:
                     if clean_model and part:
                         candidate_queries.append(f"{clean_model} {part}")
                     if clean_model and profile.category and profile.category != part:
@@ -1652,17 +1675,17 @@ class AutoDukanAdapter:
                     if part and part != "part":
                         candidate_queries.append(part)
 
-                    import urllib.parse
-                    for cand_query in candidate_queries:
-                        if cards:
-                            break
-                        self.progress(f"Refining search to '{cand_query}' on AutoDukan")
-                        qs = f"search={urllib.parse.quote_plus(cand_query)}&search_term={urllib.parse.quote_plus(cand_query)}"
-                        if self._car_model_id:
-                            qs = f"car_model_id={self._car_model_id}&{qs}"
-                        url = f"{self.base_url}/products-list?{qs}"
-                        await self._goto(url)
-                        cards = await self._read_cards()
+                import urllib.parse
+                for cand_query in candidate_queries:
+                    if cards:
+                        break
+                    self.progress(f"Refining search to '{cand_query}' on AutoDukan")
+                    qs = f"search={urllib.parse.quote_plus(cand_query)}&search_term={urllib.parse.quote_plus(cand_query)}"
+                    if self._car_model_id:
+                        qs = f"car_model_id={self._car_model_id}&{qs}"
+                    url = f"{self.base_url}/products-list?{qs}"
+                    await self._goto(url)
+                    cards = await self._read_cards()
 
         if not cards:
             return SearchOutcome(
@@ -1682,7 +1705,7 @@ class AutoDukanAdapter:
             if not url or not title or url in seen:
                 continue
             seen.add(url)
-            is_verified = bool(self._vehicle_confirmed and (self._car_model_id or self._category_confirmed) and not getattr(self, "_using_search_fallback", False))
+            is_verified = bool(self._vehicle_confirmed and (self._car_model_id or (self._category_confirmed and not getattr(self, "_using_search_fallback", False))))
             clean_title = re.sub(r"^(?:Add to Cart|View)\s*", "", title, flags=re.I).strip()
             card_brand = _clean(card.get("brand") or profile.maker or "")
             listing = Listing(

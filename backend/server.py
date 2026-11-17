@@ -146,6 +146,7 @@ sse_manager = SSEManager()
 # Active Conversation Registry
 CONVERSATIONS: Dict[str, Conversation] = {}
 SESSION_LOCKS: Dict[str, asyncio.Lock] = {}
+ACTIVE_SEARCH_TASKS: Dict[str, asyncio.Task] = {}
 COLLECT_STARTED: Dict[str, bool] = {}
 
 
@@ -385,6 +386,32 @@ def instrument_session(thread_id: str, session: Session):
             return wrapped_collect
 
         adapter.collect = make_collect_wrapper(orig_collect, vendor_name, supplier_title)
+
+    # 3. Attach on_queued notification callback to inform frontend when search is queued
+    def on_queued_handler():
+        for v_name, adapter in session.adapters.items():
+            s_title = "Boodmo" if v_name == "boodmo" else "AutoDukan"
+            sse_manager.publish(
+                thread_id,
+                {
+                    "type": "adapter_progress",
+                    "supplier": s_title,
+                    "vendor": v_name,
+                    "status": "Queued",
+                    "progress": 5,
+                    "message": "Waiting for available server search worker...",
+                },
+            )
+        sse_manager.publish(
+            thread_id,
+            {
+                "type": "log_event",
+                "message": "Search queued: waiting for server search worker slot",
+                "level": "info",
+            },
+        )
+
+    session.on_queued = on_queued_handler
 
 
 # -----------------------------------------------------------------
@@ -674,7 +701,9 @@ async def start_chat(payload: StartRequest):
                     {"type": "error", "error": str(e)},
                 )
 
-        asyncio.create_task(run_start())
+        t = asyncio.create_task(run_start())
+        ACTIVE_SEARCH_TASKS[thread_id] = t
+        t.add_done_callback(lambda _: ACTIVE_SEARCH_TASKS.pop(thread_id, None))
 
     return {
         "status": "ok",
@@ -787,7 +816,9 @@ async def reply_chat(payload: ReplyRequest):
                     {"type": "error", "error": str(e)},
                 )
 
-        asyncio.create_task(run_reply())
+        t = asyncio.create_task(run_reply())
+        ACTIVE_SEARCH_TASKS[thread_id] = t
+        t.add_done_callback(lambda _: ACTIVE_SEARCH_TASKS.pop(thread_id, None))
 
     return {"status": "ok", "thread_id": thread_id}
 
@@ -798,6 +829,9 @@ async def cancel_chat(payload: Dict[str, str]):
     thread_id = payload.get("thread_id")
     if thread_id:
         log.info("Canceling active sourcing session: %s", thread_id)
+        task = ACTIVE_SEARCH_TASKS.pop(thread_id, None)
+        if task and not task.done():
+            task.cancel()
         try:
             await close_session(thread_id)
         except Exception as e:

@@ -51,6 +51,7 @@ class Session:
     announce: Callable[[str], None]   # short spoken/printed status lines
     require_confirmation: bool = False
     on_supplier_completed: Optional[Callable[[SearchOutcome], None]] = None
+    on_queued: Optional[Callable[[], None]] = None
 
     @property
     def adapters(self) -> dict[str, object]:
@@ -61,6 +62,15 @@ class Session:
 
 
 SESSIONS: dict[str, Session] = {}
+MAX_CONCURRENT_SEARCHES = int(os.environ.get("MAX_CONCURRENT_SEARCHES", "2"))
+_SEARCH_SEMAPHORE: Optional[asyncio.Semaphore] = None
+
+
+def get_search_semaphore() -> asyncio.Semaphore:
+    global _SEARCH_SEMAPHORE
+    if _SEARCH_SEMAPHORE is None:
+        _SEARCH_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_SEARCHES)
+    return _SEARCH_SEMAPHORE
 
 
 def open_session(thread_id: str, *, headless: bool = True,
@@ -68,13 +78,15 @@ def open_session(thread_id: str, *, headless: bool = True,
                  announce: Callable[[str], None] | None = None,
                  record_video_dir: Optional[str] = None,
                  require_confirmation: bool = False,
-                 on_supplier_completed: Optional[Callable[[SearchOutcome], None]] = None) -> Session:
+                 on_supplier_completed: Optional[Callable[[SearchOutcome], None]] = None,
+                 on_queued: Optional[Callable[[], None]] = None) -> Session:
     bm = get_browser_manager()
     s = Session(boodmo_adapter=BoodmoAdapter(headless=headless, progress=progress, record_video_dir=record_video_dir, session_id=thread_id, browser_manager=bm),
                 autodukan_adapter=AutoDukanAdapter(headless=headless, progress=progress, record_video_dir=record_video_dir, session_id=thread_id, browser_manager=bm),
                 announce=announce or (lambda t: None),
                 require_confirmation=require_confirmation,
-                on_supplier_completed=on_supplier_completed)
+                on_supplier_completed=on_supplier_completed,
+                on_queued=on_queued)
     SESSIONS[thread_id] = s
     return s
 
@@ -677,30 +689,43 @@ async def collect(state: State, config) -> State:
             except Exception as e:
                 log.warning("Error closing %s adapter: %s", name, e)
 
-    t_start_all = time.time()
-    perf_monitor.log_search_started(thread_id, state.get("request", ""))
-
-    # Progressive concurrent supplier collection via asyncio.as_completed
-    supplier_tasks = {
-        asyncio.create_task(collect_vendor_safe(name, adapter, profiles[name])): name
-        for name, adapter in s.adapters.items()
-    }
-
-    outcomes = []
-    for fut in asyncio.as_completed(supplier_tasks.keys()):
-        outcome = await fut
-        outcomes.append(outcome)
-        elapsed = getattr(outcome, "elapsed_seconds", 0.0)
-        n_products = len(outcome.listings) if outcome.listings else 0
-        s.announce(f"{outcome.vendor.title()} completed: {n_products} parts found ({elapsed:.1f}s)")
-        if hasattr(s, "on_supplier_completed") and callable(s.on_supplier_completed):
+    sem = get_search_semaphore()
+    is_queued = sem.locked()
+    if is_queued:
+        s.announce(f"Search queued. Waiting for server worker capacity (max concurrent: {MAX_CONCURRENT_SEARCHES})...")
+        if hasattr(s, "on_queued") and callable(s.on_queued):
             try:
-                s.on_supplier_completed(outcome)
-            except Exception as cb_err:
-                log.warning("Error in on_supplier_completed callback: %s", cb_err)
+                s.on_queued()
+            except Exception as q_err:
+                log.warning("Error in on_queued callback: %s", q_err)
 
-    total_elapsed = round(time.time() - t_start_all, 2)
-    perf_monitor.log_search_completed(thread_id, total_elapsed)
+    async with sem:
+        if is_queued:
+            s.announce("Server search capacity acquired. Checking prices and stock across suppliers...")
+        t_start_all = time.time()
+        perf_monitor.log_search_started(thread_id, state.get("request", ""))
+
+        # Progressive concurrent supplier collection via asyncio.as_completed
+        supplier_tasks = {
+            asyncio.create_task(collect_vendor_safe(name, adapter, profiles[name])): name
+            for name, adapter in s.adapters.items()
+        }
+
+        outcomes = []
+        for fut in asyncio.as_completed(supplier_tasks.keys()):
+            outcome = await fut
+            outcomes.append(outcome)
+            elapsed = getattr(outcome, "elapsed_seconds", 0.0)
+            n_products = len(outcome.listings) if outcome.listings else 0
+            s.announce(f"{outcome.vendor.title()} completed: {n_products} parts found ({elapsed:.1f}s)")
+            if hasattr(s, "on_supplier_completed") and callable(s.on_supplier_completed):
+                try:
+                    s.on_supplier_completed(outcome)
+                except Exception as cb_err:
+                    log.warning("Error in on_supplier_completed callback: %s", cb_err)
+
+        total_elapsed = round(time.time() - t_start_all, 2)
+        perf_monitor.log_search_completed(thread_id, total_elapsed)
 
     vendor_outcomes = [asdict(outcome) for outcome in outcomes]
 
