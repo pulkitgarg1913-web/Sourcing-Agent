@@ -312,4 +312,89 @@ describe("ProductResults Component", () => {
     expect(screen.getByText("Tata (OEM) Outside Rear View Mirror Left Side With Indicator")).toBeDefined()
     expect(screen.getByText("Lumax Tata Nexon Mirror Glass Plate with Base RH")).toBeDefined()
   })
+
+  it("filters listings by stock status (In Stock vs Out of Stock)", () => {
+    const mixedStock = [
+      {
+        title: "In-Stock Product",
+        brand: "Bosch",
+        part_number: "P1",
+        price: 500,
+        vendor: "boodmo",
+        available: true,
+        fitment: "verified",
+        relevance: "EXACT_MATCH",
+      },
+      {
+        title: "Out-of-Stock Product",
+        brand: "Valeo",
+        part_number: "P2",
+        price: 600,
+        vendor: "boodmo",
+        available: false,
+        fitment: "verified",
+        relevance: "EXACT_MATCH",
+      },
+    ]
+
+    render(
+      <ProductResults
+        listings={mixedStock}
+        suppliers={sampleSuppliers}
+        activeFilter="all"
+        onSelectFilter={vi.fn()}
+      />
+    )
+
+    expect(screen.getByText("In-Stock Product")).toBeDefined()
+    expect(screen.getByText("Out-of-Stock Product")).toBeDefined()
+
+    // Filter to In Stock only
+    const inStockBtn = screen.getByRole("button", { name: /In Stock \(1\)/i })
+    fireEvent.click(inStockBtn)
+
+    expect(screen.getByText("In-Stock Product")).toBeDefined()
+    expect(screen.queryByText("Out-of-Stock Product")).toBeNull()
+
+    // Filter to Out of Stock only
+    const outOfStockBtn = screen.getByRole("button", { name: /Out of Stock \(1\)/i })
+    fireEvent.click(outOfStockBtn)
+
+    expect(screen.queryByText("In-Stock Product")).toBeNull()
+    expect(screen.getByText("Out-of-Stock Product")).toBeDefined()
+  })
+
+  it("renders the 8 required columns and section anchor IDs for both suppliers", () => {
+    const { container } = render(
+      <ProductResults
+        listings={sampleListings}
+        suppliers={sampleSuppliers}
+        activeFilter="all"
+        onSelectFilter={vi.fn()}
+      />
+    )
+
+    // Check supplier section anchor IDs
+    expect(container.querySelector("#supplier-section-boodmo")).not.toBeNull()
+    expect(container.querySelector("#supplier-section-autodukan")).not.toBeNull()
+
+    // Check required table headers (Part Title & Match, Price, Seller / Dispatch, Stock, Part No., Brand, Fitment & Basis, Action)
+    const headers = screen.getAllByRole("columnheader")
+    const headerTexts = headers.map((h) => h.textContent.trim())
+
+    expect(headerTexts).toContain("Part Title & Match")
+    expect(headerTexts).toContain("Price")
+    expect(headerTexts).toContain("Seller / Dispatch")
+    expect(headerTexts).toContain("Stock")
+    expect(headerTexts).toContain("Part No.")
+    expect(headerTexts).toContain("Brand")
+    expect(headerTexts).toContain("Fitment & Basis")
+    expect(headerTexts).toContain("Action")
+
+    // Check KPI metrics
+    expect(screen.getByText("Total Found")).toBeDefined()
+    expect(screen.getByText("Verified Fitment")).toBeDefined()
+    expect(screen.getByText("In-Stock")).toBeDefined()
+    expect(screen.getByText("Cheapest Available")).toBeDefined()
+  })
 })

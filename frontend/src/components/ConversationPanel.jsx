@@ -33,15 +33,54 @@ export default function ConversationPanel({
   const [editingField, setEditingField] = useState(null)
   const [editValue, setEditValue] = useState("")
 
-  const messagesEndRef = useRef(null)
+  const messagesContainerRef = useRef(null)
+  const isNearBottomRef = useRef(true)
+  const userJustSentRef = useRef(false)
+
   const inputRef = useRef(null)
   const mediaRecorderRef = useRef(null)
   const audioChunksRef = useRef([])
   const recognitionRef = useRef(null)
 
-  // Auto-scroll to bottom of conversation
+  // Track if user was scrolled near bottom before update
+  const handleScroll = () => {
+    const el = messagesContainerRef.current
+    if (!el) return
+    const threshold = 120 // pixels threshold to detect if near bottom
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    isNearBottomRef.current = distanceFromBottom <= threshold
+  }
+
+  // Helper to safely scroll chat container
+  const scrollChatToBottom = (smooth = true) => {
+    const el = messagesContainerRef.current
+    if (!el) return
+    if (typeof el.scrollTo === "function") {
+      try {
+        el.scrollTo({ top: el.scrollHeight, behavior: smooth ? "smooth" : "auto" })
+        return
+      } catch (err) {}
+    }
+    el.scrollTop = el.scrollHeight
+  }
+
+  // Auto-scroll chat container safely without scrolling page/window
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
+    const el = messagesContainerRef.current
+    if (!el) return
+
+    const wasUserAction = userJustSentRef.current
+    userJustSentRef.current = false
+
+    if (wasUserAction) {
+      // User triggered action: always scroll chat container to bottom
+      scrollChatToBottom(true)
+      isNearBottomRef.current = true
+    } else if (isNearBottomRef.current) {
+      // New assistant response or update: only scroll if user was already near bottom
+      scrollChatToBottom(true)
+    }
+    // If user scrolled up, do not force them to bottom!
   }, [messages, pendingQuestion])
 
   // Reset dropdown when question changes
@@ -167,6 +206,7 @@ export default function ConversationPanel({
     const trimmed = inputText.trim()
     if (!trimmed) return
 
+    userJustSentRef.current = true
     if (pendingQuestion) {
       onReplyQuestion(trimmed)
     } else {
@@ -177,6 +217,7 @@ export default function ConversationPanel({
 
   // Handle Option Click (pills / buttons)
   const handleOptionClick = (option) => {
+    userJustSentRef.current = true
     onReplyQuestion(option)
     setInputText("")
   }
@@ -187,6 +228,7 @@ export default function ConversationPanel({
       setEditingField(null)
       return
     }
+    userJustSentRef.current = true
     // Formulate a natural clarification reply e.g. "Change year to 2021"
     const correctionMsg = `Change ${fieldKey} to ${editValue.trim()}`
     if (pendingQuestion) {
@@ -318,18 +360,67 @@ export default function ConversationPanel({
                   v !== "*unknown*" && (
                     <span
                       key={k}
-                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium bg-slate-100 text-slate-600 border border-slate-200"
+                      onClick={() => {
+                        setEditingField(k)
+                        setEditValue(v)
+                      }}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium bg-slate-100 text-slate-700 border border-slate-200 cursor-pointer hover:bg-slate-200 transition-colors capitalize"
+                      title={`Click to edit ${k}`}
                     >
                       {k}: {v}
+                      <Edit2 className="w-2.5 h-2.5 opacity-50" />
                     </span>
                   )
               )}
+
+            {/* Direct Transmission / Fuel / Trim fallbacks */}
+            {vehicleProfile.fuel && !vehicleProfile.variant_filters?.fuel && (
+              <span
+                onClick={() => {
+                  setEditingField("fuel")
+                  setEditValue(vehicleProfile.fuel)
+                }}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium bg-slate-100 text-slate-700 border border-slate-200 cursor-pointer hover:bg-slate-200 transition-colors"
+                title="Click to edit fuel type"
+              >
+                Fuel: {vehicleProfile.fuel}
+                <Edit2 className="w-2.5 h-2.5 opacity-50" />
+              </span>
+            )}
+
+            {vehicleProfile.transmission && !vehicleProfile.variant_filters?.transmission && (
+              <span
+                onClick={() => {
+                  setEditingField("transmission")
+                  setEditValue(vehicleProfile.transmission)
+                }}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium bg-slate-100 text-slate-700 border border-slate-200 cursor-pointer hover:bg-slate-200 transition-colors"
+                title="Click to edit transmission"
+              >
+                Transmission: {vehicleProfile.transmission}
+                <Edit2 className="w-2.5 h-2.5 opacity-50" />
+              </span>
+            )}
+
+            {vehicleProfile.trim && !vehicleProfile.variant_filters?.trim && (
+              <span
+                onClick={() => {
+                  setEditingField("trim")
+                  setEditValue(vehicleProfile.trim)
+                }}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium bg-slate-100 text-slate-700 border border-slate-200 cursor-pointer hover:bg-slate-200 transition-colors"
+                title="Click to edit trim"
+              >
+                Trim: {vehicleProfile.trim}
+                <Edit2 className="w-2.5 h-2.5 opacity-50" />
+              </span>
+            )}
           </div>
 
           {/* Inline Edit Modal / Popover */}
           {editingField && (
             <div className="mt-2.5 p-2.5 bg-white rounded-lg border border-blue-200 shadow-sm flex items-center gap-2">
-              <span className="text-xs font-medium text-slate-600 whitespace-nowrap">
+              <span className="text-xs font-medium text-slate-600 whitespace-nowrap capitalize">
                 Update {editingField}:
               </span>
               <input
@@ -364,7 +455,11 @@ export default function ConversationPanel({
       )}
 
       {/* Chat Messages Feed */}
-      <div className="flex-1 p-4 overflow-y-auto space-y-3.5 min-h-[300px] max-h-[440px]">
+      <div
+        ref={messagesContainerRef}
+        onScroll={handleScroll}
+        className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3.5"
+      >
         {messages.length === 0 && (
           <div className="h-full flex flex-col items-center justify-center text-center p-6 text-slate-400">
             <div className="w-12 h-12 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center mb-3 border border-blue-100">
@@ -443,6 +538,7 @@ export default function ConversationPanel({
                   key={example}
                   type="button"
                   onClick={() => {
+                    userJustSentRef.current = true
                     onSendMessage(example)
                     setInputText("")
                   }}
@@ -574,8 +670,6 @@ export default function ConversationPanel({
             ) : null}
           </div>
         )}
-
-        <div ref={messagesEndRef} />
       </div>
 
       {/* Voice Transcription Indicator / Preview Banner */}
@@ -607,7 +701,7 @@ export default function ConversationPanel({
       {/* Customer Input Form */}
       <form
         onSubmit={handleSubmit}
-        className="p-3 border-t border-slate-200 bg-white"
+        className="p-3 border-t border-slate-200 bg-white shrink-0"
       >
         <div className="relative flex items-center rounded-xl border border-slate-300 bg-white focus-within:border-blue-500 focus-within:ring-2 focus-within:ring-blue-100 transition-all">
           <input

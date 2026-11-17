@@ -33,14 +33,19 @@ export default function SupplierMonitor({
         {suppliers.map((s) => {
           const isCompleted = s.status === "Completed"
           const isFailed = s.status === "Failed"
+          const isBlocked = s.status === "Blocked"
           const isInProgress =
             !isCompleted &&
             !isFailed &&
+            !isBlocked &&
             s.status !== "Waiting" &&
+            s.status !== "Pending" &&
             s.status !== "Idle"
 
           const statusColorMap = {
             Waiting: "bg-slate-50 text-slate-600 border-slate-200",
+            Pending: "bg-slate-50 text-slate-600 border-slate-200",
+            Searching: "bg-blue-50 text-blue-700 border-blue-200",
             "Initializing browser": "bg-blue-50 text-blue-700 border-blue-200",
             "Opening supplier website": "bg-blue-50 text-blue-700 border-blue-200",
             "Selecting vehicle": "bg-blue-50 text-blue-700 border-blue-200",
@@ -49,6 +54,7 @@ export default function SupplierMonitor({
             "Extracting listings": "bg-purple-50 text-purple-700 border-purple-200",
             Completed: "bg-emerald-50 text-emerald-700 border-emerald-200",
             Failed: "bg-rose-50 text-rose-700 border-rose-200",
+            Blocked: "bg-amber-50 text-amber-700 border-amber-200",
           }
 
           const badgeClass =
@@ -95,7 +101,7 @@ export default function SupplierMonitor({
                       <Loader2 className="w-2.5 h-2.5 animate-spin" />
                     )}
                     {isCompleted && <CheckCircle2 className="w-2.5 h-2.5" />}
-                    {isFailed && <AlertCircle className="w-2.5 h-2.5" />}
+                    {(isFailed || isBlocked) && <AlertCircle className="w-2.5 h-2.5" />}
                     {s.status}
                   </span>
                 </div>

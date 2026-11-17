@@ -99,4 +99,78 @@ describe("ConversationPanel Component", () => {
 
     expect(onReplyMock).toHaveBeenCalledWith("Petrol")
   })
+
+  it("does not call scrollIntoView on message updates (prevents full page jumping)", () => {
+    const scrollIntoViewSpy = vi.fn()
+    window.HTMLElement.prototype.scrollIntoView = scrollIntoViewSpy
+
+    const { rerender } = render(
+      <ConversationPanel
+        messages={[{ role: "agent", text: "Initial message" }]}
+        pendingQuestion={null}
+        vehicleProfile={dummyProfile}
+        onSendMessage={vi.fn()}
+        onReplyQuestion={vi.fn()}
+        isSearching={false}
+        activeSupplierCount={0}
+      />
+    )
+
+    // Append a new assistant message
+    rerender(
+      <ConversationPanel
+        messages={[
+          { role: "agent", text: "Initial message" },
+          { role: "agent", text: "New incoming message from agent" },
+        ]}
+        pendingQuestion={null}
+        vehicleProfile={dummyProfile}
+        onSendMessage={vi.fn()}
+        onReplyQuestion={vi.fn()}
+        isSearching={false}
+        activeSupplierCount={0}
+      />
+    )
+
+    // scrollIntoView must NOT have been called!
+    expect(scrollIntoViewSpy).not.toHaveBeenCalled()
+  })
+
+  it("renders editable details for fuel and transmission and opens inline editor", () => {
+    const onSendMock = vi.fn()
+    const profileWithFilters = {
+      ...dummyProfile,
+      fuel: "Diesel",
+      transmission: "Manual",
+    }
+
+    render(
+      <ConversationPanel
+        messages={[{ role: "agent", text: "Vehicle profile ready" }]}
+        pendingQuestion={null}
+        vehicleProfile={profileWithFilters}
+        onSendMessage={onSendMock}
+        onReplyQuestion={vi.fn()}
+        isSearching={false}
+        activeSupplierCount={0}
+      />
+    )
+
+    expect(screen.getByText("Fuel: Diesel")).toBeDefined()
+    expect(screen.getByText("Transmission: Manual")).toBeDefined()
+
+    // Click Fuel badge to edit
+    const fuelBadge = screen.getByText("Fuel: Diesel")
+    fireEvent.click(fuelBadge)
+
+    // Editor should appear
+    expect(screen.getByText("Update fuel:")).toBeDefined()
+    const editInput = screen.getByPlaceholderText("Enter new fuel")
+    fireEvent.change(editInput, { target: { value: "Petrol" } })
+
+    const saveBtn = screen.getByRole("button", { name: "Save" })
+    fireEvent.click(saveBtn)
+
+    expect(onSendMock).toHaveBeenCalledWith("Change fuel to Petrol")
+  })
 })

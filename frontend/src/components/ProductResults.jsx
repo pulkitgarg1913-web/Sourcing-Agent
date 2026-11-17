@@ -33,13 +33,14 @@ export default function ProductResults({
   onSelectFilter,
 }) {
   const [relevanceFilter, setRelevanceFilter] = useState("all") // all | exact | close | component | accessory
-  const [sortOption, setSortOption] = useState("price_asc") // price_asc | price_desc | brand | fitment
+  const [stockFilter, setStockFilter] = useState("all") // all | in_stock | out_of_stock
+  const [sortOption, setSortOption] = useState("price_asc") // price_asc | price_desc | best_match | brand | fitment
   const [searchQuery, setSearchQuery] = useState("")
   const [showAccessoriesMap, setShowAccessoriesMap] = useState({}) // { boodmo: bool, autodukan: bool }
   const [layoutMode, setLayoutMode] = useState("stacked") // stacked | side_by_side
   const [copied, setCopied] = useState(false)
 
-  // Filter listings by relevance & search text
+  // Filter listings by relevance, stock & search text
   const filterListings = (items) => {
     return items.filter((item) => {
       if (item.relevance === "IRRELEVANT") return false
@@ -49,6 +50,9 @@ export default function ProductResults({
       if (relevanceFilter === "close" && rel !== "CLOSE_MATCH") return false
       if (relevanceFilter === "component" && rel !== "COMPONENT") return false
       if (relevanceFilter === "accessory" && rel !== "ACCESSORY") return false
+
+      if (stockFilter === "in_stock" && item.available !== true) return false
+      if (stockFilter === "out_of_stock" && item.available !== false) return false
 
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase()
@@ -78,15 +82,18 @@ export default function ProductResults({
       const tierA = tierOrder[a.relevance] || 5
       const tierB = tierOrder[b.relevance] || 5
 
-      if (tierA !== tierB) {
-        return tierA - tierB
-      }
-
-      if (sortOption === "price_asc") {
+      if (sortOption === "best_match") {
+        if (tierA !== tierB) return tierA - tierB
+        const pa = a.price ?? Infinity
+        const pb = b.price ?? Infinity
+        return pa - pb
+      } else if (sortOption === "price_asc") {
+        if (tierA !== tierB) return tierA - tierB
         const pa = a.price ?? Infinity
         const pb = b.price ?? Infinity
         return pa - pb
       } else if (sortOption === "price_desc") {
+        if (tierA !== tierB) return tierA - tierB
         const pa = a.price ?? -Infinity
         const pb = b.price ?? -Infinity
         return pb - pa
@@ -122,11 +129,11 @@ export default function ProductResults({
 
   const boodmoFiltered = useMemo(
     () => sortListings(filterListings(boodmoRaw)),
-    [boodmoRaw, relevanceFilter, searchQuery, sortOption]
+    [boodmoRaw, relevanceFilter, stockFilter, searchQuery, sortOption]
   )
   const autodukanFiltered = useMemo(
     () => sortListings(filterListings(autodukanRaw)),
-    [autodukanRaw, relevanceFilter, searchQuery, sortOption]
+    [autodukanRaw, relevanceFilter, stockFilter, searchQuery, sortOption]
   )
 
   // Supplier counts
@@ -136,6 +143,16 @@ export default function ProductResults({
       all: valid.length,
       boodmo: valid.filter(isBoodmo).length,
       autodukan: valid.filter(isAutoDukan).length,
+    }
+  }, [listings])
+
+  // Stock counts
+  const stockCounts = useMemo(() => {
+    const valid = listings.filter((l) => l.relevance !== "IRRELEVANT")
+    return {
+      all: valid.length,
+      inStock: valid.filter((l) => l.available === true).length,
+      outOfStock: valid.filter((l) => l.available === false).length,
     }
   }, [listings])
 
@@ -214,7 +231,31 @@ export default function ProductResults({
         "Awaiting supplier extraction. Once both adapters finish, recommended sourcing will display here automatically."
     }
 
-    return { boodmoBest, autodukanBest, recommendation, recommendedVendor, savings }
+    const totalFound = listings.filter((l) => l.relevance !== "IRRELEVANT").length
+    const verifiedFitmentCount = listings.filter(
+      (l) => l.relevance !== "IRRELEVANT" && l.fitment === "verified"
+    ).length
+    const inStockCount = listings.filter(
+      (l) => l.relevance !== "IRRELEVANT" && l.available === true
+    ).length
+    const overallCheapest =
+      boodmoBest && autodukanBest
+        ? boodmoBest.price <= autodukanBest.price
+          ? boodmoBest
+          : autodukanBest
+        : boodmoBest || autodukanBest || null
+
+    return {
+      boodmoBest,
+      autodukanBest,
+      recommendation,
+      recommendedVendor,
+      savings,
+      totalFound,
+      verifiedFitmentCount,
+      inStockCount,
+      overallCheapest,
+    }
   }, [boodmoRaw, autodukanRaw, listings])
 
   const copyRecommendation = () => {
@@ -293,7 +334,23 @@ export default function ProductResults({
               <span>{relConfig.label}</span>
             </span>
 
-            {item.product_type && (
+            {/* Complete Assembly badge */}
+            {(item.title?.toLowerCase().includes("assembly") ||
+              item.assembly_type === "complete" ||
+              item.product_type === "assembly") && (
+              <span className="text-[10px] font-semibold text-indigo-700 bg-indigo-50 border border-indigo-200 px-1.5 py-0.5 rounded">
+                Complete Assembly
+              </span>
+            )}
+
+            {/* Component badge */}
+            {(item.relevance === "COMPONENT" || item.product_type === "component") && (
+              <span className="text-[10px] font-medium text-purple-700 bg-purple-50 border border-purple-200 px-1.5 py-0.5 rounded">
+                Component
+              </span>
+            )}
+
+            {item.product_type && item.product_type !== "assembly" && item.product_type !== "component" && (
               <span className="text-[10px] font-medium text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded capitalize">
                 {item.product_type.replace("_", " ")}
               </span>
@@ -452,7 +509,14 @@ export default function ProductResults({
   const SupplierTableSection = ({ vendor, title, badgeColor, items, supplierInfo }) => {
     const isCompleted = supplierInfo?.status === "Completed"
     const isFailed = supplierInfo?.status === "Failed"
-    const isSearching = !isCompleted && !isFailed && supplierInfo?.status !== "Waiting" && supplierInfo?.status !== "Idle"
+    const isBlocked = supplierInfo?.status === "Blocked"
+    const isSearching =
+      !isCompleted &&
+      !isFailed &&
+      !isBlocked &&
+      supplierInfo?.status !== "Waiting" &&
+      supplierInfo?.status !== "Pending" &&
+      supplierInfo?.status !== "Idle"
 
     const inStockCount = items.filter((x) => x.available === true).length
     const cheapest = items
@@ -463,7 +527,7 @@ export default function ProductResults({
       )
 
     return (
-      <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
+      <div id={`supplier-section-${vendor}`} className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
         {/* Adapter Branded Header */}
         <div className="px-4 py-3 bg-slate-50/80 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
@@ -500,6 +564,16 @@ export default function ProductResults({
             {isFailed && (
               <span className="text-[10px] font-semibold text-rose-700 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded">
                 Search Failed
+              </span>
+            )}
+            {isBlocked && (
+              <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded">
+                Blocked
+              </span>
+            )}
+            {(supplierInfo?.status === "Waiting" || supplierInfo?.status === "Pending" || !supplierInfo?.status) && !isCompleted && !isFailed && !isBlocked && (
+              <span className="text-[10px] font-medium text-slate-500 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded">
+                Pending
               </span>
             )}
           </div>
@@ -539,7 +613,7 @@ export default function ProductResults({
               <table className="w-full text-left border-collapse text-xs">
                 <thead>
                   <tr className="bg-slate-50 text-slate-600 border-b border-slate-200 font-semibold uppercase tracking-wider text-[10px]">
-                    <th className="py-2.5 px-3">Part Title &amp; Supplier</th>
+                    <th className="py-2.5 px-3">Part Title &amp; Match</th>
                     <th className="py-2.5 px-3">Price</th>
                     <th className="py-2.5 px-3">Seller / Dispatch</th>
                     <th className="py-2.5 px-3">Stock</th>
@@ -609,6 +683,28 @@ export default function ProductResults({
           <p className="text-xs sm:text-sm font-medium text-slate-800 leading-relaxed">
             {procurementSummary.recommendation}
           </p>
+        </div>
+
+        {/* Procurement KPI Summary Badges */}
+        <div className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+          <div className="bg-slate-50 border border-slate-200 rounded-lg p-2.5">
+            <span className="text-[10px] uppercase font-semibold text-slate-400 block">Total Found</span>
+            <span className="text-sm font-bold text-slate-900">{procurementSummary.totalFound} items</span>
+          </div>
+          <div className="bg-emerald-50/60 border border-emerald-200 rounded-lg p-2.5">
+            <span className="text-[10px] uppercase font-semibold text-emerald-600 block">Verified Fitment</span>
+            <span className="text-sm font-bold text-emerald-800">{procurementSummary.verifiedFitmentCount} parts</span>
+          </div>
+          <div className="bg-blue-50/60 border border-blue-200 rounded-lg p-2.5">
+            <span className="text-[10px] uppercase font-semibold text-blue-600 block">In-Stock</span>
+            <span className="text-sm font-bold text-blue-800">{procurementSummary.inStockCount} available</span>
+          </div>
+          <div className="bg-amber-50/60 border border-amber-200 rounded-lg p-2.5">
+            <span className="text-[10px] uppercase font-semibold text-amber-700 block">Cheapest Available</span>
+            <span className="text-sm font-bold text-slate-900">
+              {procurementSummary.overallCheapest ? formatRupees(procurementSummary.overallCheapest.price) : "—"}
+            </span>
+          </div>
         </div>
 
         {/* Quick Side-by-Side Comparison Pills */}
@@ -741,6 +837,7 @@ export default function ProductResults({
                 onChange={(e) => setSortOption(e.target.value)}
                 className="text-xs font-medium bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 pr-7 text-slate-700 hover:border-slate-300 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer shadow-2xs"
               >
+                <option value="best_match">Best Match</option>
                 <option value="price_asc">Price: Low to High</option>
                 <option value="price_desc">Price: High to Low</option>
                 <option value="fitment">Fitment: Verified First</option>
@@ -764,75 +861,120 @@ export default function ProductResults({
           </div>
         </div>
 
-        {/* Relevance Filters Pill Row */}
-        <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-          <span className="text-xs font-semibold text-slate-500 flex items-center gap-1 mr-1">
-            <Filter className="w-3 h-3 text-slate-400" />
-            Tier:
-          </span>
-          <button
-            type="button"
-            onClick={() => setRelevanceFilter("all")}
-            className={`text-xs px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
-              relevanceFilter === "all"
-                ? "bg-slate-800 text-white font-semibold"
-                : "bg-slate-100 hover:bg-slate-200 text-slate-700"
-            }`}
-          >
-            All Tiers ({relevanceCounts.all})
-          </button>
-          {relevanceCounts.exact > 0 && (
+        {/* Filter Rows: Match Tiers & Stock Availability */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pt-0.5 border-t border-slate-100">
+          {/* Match Tiers Filter */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-xs font-semibold text-slate-500 flex items-center gap-1 mr-1">
+              <Filter className="w-3 h-3 text-slate-400" />
+              Match:
+            </span>
             <button
               type="button"
-              onClick={() => setRelevanceFilter("exact")}
+              onClick={() => setRelevanceFilter("all")}
               className={`text-xs px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
-                relevanceFilter === "exact"
+                relevanceFilter === "all"
+                  ? "bg-slate-800 text-white font-semibold"
+                  : "bg-slate-100 hover:bg-slate-200 text-slate-700"
+              }`}
+            >
+              All Matches ({relevanceCounts.all})
+            </button>
+            {relevanceCounts.exact > 0 && (
+              <button
+                type="button"
+                onClick={() => setRelevanceFilter("exact")}
+                className={`text-xs px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
+                  relevanceFilter === "exact"
+                    ? "bg-emerald-600 text-white font-semibold"
+                    : "bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200"
+                }`}
+              >
+                Exact Matches ({relevanceCounts.exact})
+              </button>
+            )}
+            {relevanceCounts.close > 0 && (
+              <button
+                type="button"
+                onClick={() => setRelevanceFilter("close")}
+                className={`text-xs px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
+                  relevanceFilter === "close"
+                    ? "bg-teal-600 text-white font-semibold"
+                    : "bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200"
+                }`}
+              >
+                Similar Matches ({relevanceCounts.close})
+              </button>
+            )}
+            {relevanceCounts.component > 0 && (
+              <button
+                type="button"
+                onClick={() => setRelevanceFilter("component")}
+                className={`text-xs px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
+                  relevanceFilter === "component"
+                    ? "bg-indigo-600 text-white font-semibold"
+                    : "bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-200"
+                }`}
+              >
+                Components ({relevanceCounts.component})
+              </button>
+            )}
+            {relevanceCounts.accessory > 0 && (
+              <button
+                type="button"
+                onClick={() => setRelevanceFilter("accessory")}
+                className={`text-xs px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
+                  relevanceFilter === "accessory"
+                    ? "bg-amber-600 text-white font-semibold"
+                    : "bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200"
+                }`}
+              >
+                Accessories ({relevanceCounts.accessory})
+              </button>
+            )}
+          </div>
+
+          {/* Stock Availability Filter */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-xs font-semibold text-slate-500 mr-1">
+              Stock:
+            </span>
+            <button
+              type="button"
+              onClick={() => setStockFilter("all")}
+              className={`text-xs px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
+                stockFilter === "all"
+                  ? "bg-slate-800 text-white font-semibold"
+                  : "bg-slate-100 hover:bg-slate-200 text-slate-700"
+              }`}
+            >
+              All Stock ({stockCounts.all})
+            </button>
+            <button
+              type="button"
+              onClick={() => setStockFilter("in_stock")}
+              className={`text-xs px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
+                stockFilter === "in_stock"
                   ? "bg-emerald-600 text-white font-semibold"
                   : "bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200"
               }`}
             >
-              Exact Matches ({relevanceCounts.exact})
+              In Stock ({stockCounts.inStock})
             </button>
-          )}
-          {relevanceCounts.close > 0 && (
-            <button
-              type="button"
-              onClick={() => setRelevanceFilter("close")}
-              className={`text-xs px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
-                relevanceFilter === "close"
-                  ? "bg-teal-600 text-white font-semibold"
-                  : "bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200"
-              }`}
-            >
-              Close Matches ({relevanceCounts.close})
-            </button>
-          )}
-          {relevanceCounts.component > 0 && (
-            <button
-              type="button"
-              onClick={() => setRelevanceFilter("component")}
-              className={`text-xs px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
-                relevanceFilter === "component"
-                  ? "bg-indigo-600 text-white font-semibold"
-                  : "bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-200"
-              }`}
-            >
-              Components ({relevanceCounts.component})
-            </button>
-          )}
-          {relevanceCounts.accessory > 0 && (
-            <button
-              type="button"
-              onClick={() => setRelevanceFilter("accessory")}
-              className={`text-xs px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
-                relevanceFilter === "accessory"
-                  ? "bg-amber-600 text-white font-semibold"
-                  : "bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200"
-              }`}
-            >
-              Accessories ({relevanceCounts.accessory})
-            </button>
-          )}
+            {stockCounts.outOfStock > 0 && (
+              <button
+                type="button"
+                onClick={() => setStockFilter("out_of_stock")}
+                className={`text-xs px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
+                  stockFilter === "out_of_stock"
+                    ? "bg-rose-600 text-white font-semibold"
+                    : "bg-rose-50 hover:bg-rose-100 text-rose-800 border border-rose-200"
+                }`}
+              >
+                Out of Stock ({stockCounts.outOfStock})
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
