@@ -655,33 +655,45 @@ async def collect(state: State, config) -> State:
             except Exception:
                 pass
         vendor_outcomes = cached_outcomes
-        all_listings = [
-            {**(listing.to_dict() if hasattr(listing, "to_dict") else dict(listing)), "vendor": outcome["vendor"]}
-            for outcome in vendor_outcomes
-            for listing in outcome.get("listings", [])
-        ]
         target_maker = profile.maker or profile.hints.get("make") or ""
         target_model = profile.model or profile.hints.get("model") or ""
-        all_listings = relevance.classify_listings(
-            all_listings,
-            query=state.get("request", ""),
-            requested_part=profile.part or "",
-            target_maker=target_maker,
-            target_model=target_model,
-        )
-        ranked = relevance.rank_listings(all_listings)
+        target_year = profile.year or str(profile.hints.get("year") or "")
+        target_variant = profile.variant or ""
+
+        # Normalize vendor and supplier on each vendor outcome and its listings
         for vo in vendor_outcomes:
+            v_name = vo.get("vendor", "")
+            s_title = "Boodmo" if v_name == "boodmo" else "AutoDukan" if v_name == "autodukan" else v_name.title()
+            vo["vendor"] = v_name
+            vo["supplier"] = s_title
+            vo["supplier_name"] = s_title
             vo_listings = vo.get("listings") or []
-            vo["listings"] = relevance.rank_listings(
-                relevance.classify_listings(
-                    vo_listings,
-                    query=state.get("request", ""),
-                    requested_part=profile.part or "",
-                    target_maker=target_maker,
-                    target_model=target_model,
-                ),
-                price_order="asc"
+            classified_vo = relevance.classify_listings(
+                [
+                    {
+                        **(l.to_dict() if hasattr(l, "to_dict") else dict(l)),
+                        "vendor": v_name,
+                        "supplier": s_title,
+                        "supplier_name": s_title,
+                        "catalog_vehicle": vo.get("vehicle_label", ""),
+                    }
+                    for l in vo_listings
+                ],
+                query=state.get("request", ""),
+                requested_part=profile.part or "",
+                target_maker=target_maker,
+                target_model=target_model,
+                target_year=target_year,
+                target_variant=target_variant,
             )
+            vo["listings"] = relevance.rank_listings(classified_vo, price_order="asc")
+
+        all_listings = [
+            listing
+            for vo in vendor_outcomes
+            for listing in vo.get("listings", [])
+        ]
+        ranked = relevance.rank_listings(all_listings, price_order="asc")
 
         return _profile_updates(profiles) | {"outcome": {
             "status": "ok",
@@ -814,39 +826,47 @@ async def collect(state: State, config) -> State:
     except Exception as exc:
         log.warning("Could not cache search outcomes: %s", exc)
 
-    all_listings = [
-        {**(listing.to_dict() if hasattr(listing, "to_dict") else dict(listing)), "vendor": outcome.vendor}
-        for outcome in outcomes
-        for listing in outcome.listings
-    ]
     from . import relevance
 
-    # Classify all extracted listings against customer request with strict vehicle validation
     target_maker = profile.maker or profile.hints.get("make") or ""
     target_model = profile.model or profile.hints.get("model") or ""
-    all_listings = relevance.classify_listings(
-        all_listings,
-        query=state.get("request", ""),
-        requested_part=profile.part or "",
-        target_maker=target_maker,
-        target_model=target_model,
-    )
-    # Rank listings so primary matches appear first, followed by components, then accessories
-    all_listings = relevance.rank_listings(all_listings, price_order="asc")
+    target_year = profile.year or str(profile.hints.get("year") or "")
+    target_variant = profile.variant or ""
 
-    # Also classify listings within each vendor_outcome
+    # Classify listings within each vendor_outcome ensuring vendor and supplier attributes
     for vo in vendor_outcomes:
+        v_name = vo.get("vendor", "")
+        s_title = "Boodmo" if v_name == "boodmo" else "AutoDukan" if v_name == "autodukan" else v_name.title()
+        vo["vendor"] = v_name
+        vo["supplier"] = s_title
+        vo["supplier_name"] = s_title
         vo_listings = vo.get("listings") or []
-        vo["listings"] = relevance.rank_listings(
-            relevance.classify_listings(
-                vo_listings,
-                query=state.get("request", ""),
-                requested_part=profile.part or "",
-                target_maker=target_maker,
-                target_model=target_model,
-            ),
-            price_order="asc"
+        classified_vo = relevance.classify_listings(
+            [
+                {
+                    **(l.to_dict() if hasattr(l, "to_dict") else dict(l)),
+                    "vendor": v_name,
+                    "supplier": s_title,
+                    "supplier_name": s_title,
+                    "catalog_vehicle": vo.get("vehicle_label", ""),
+                }
+                for l in vo_listings
+            ],
+            query=state.get("request", ""),
+            requested_part=profile.part or "",
+            target_maker=target_maker,
+            target_model=target_model,
+            target_year=target_year,
+            target_variant=target_variant,
         )
+        vo["listings"] = relevance.rank_listings(classified_vo, price_order="asc")
+
+    all_listings = [
+        listing
+        for vo in vendor_outcomes
+        for listing in vo.get("listings", [])
+    ]
+    all_listings = relevance.rank_listings(all_listings, price_order="asc")
 
     statuses = {outcome.status for outcome in outcomes}
     status = "ok" if "ok" in statuses else "no_results" if "no_results" in statuses else "failed"

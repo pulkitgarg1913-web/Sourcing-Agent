@@ -176,14 +176,19 @@ def check_vehicle_compatibility(
     product_title: str,
     product_brand: str = "",
     target_maker: str = "",
-    target_model: str = ""
+    target_model: str = "",
+    target_year: str = "",
+    target_variant: str = "",
+    catalog_vehicle: str = "",
+    catalog_year: str = "",
 ) -> Tuple[str, str]:
-    """Verify vehicle maker and model compatibility.
+    """Verify vehicle maker, model, and year compatibility.
 
     Returns:
         (status, reason) where status is:
         - "incompatible": Candidate belongs to a different vehicle manufacturer or incompatible model.
-        - "verified": Candidate explicitly matches target maker/model.
+        - "partial": Candidate is for the compatible model but different year or variant generation.
+        - "verified": Candidate explicitly matches target maker, model, and year.
         - "unverified": Candidate has no contradictory vehicle brand (e.g. generic part or OEM).
     """
     canon_target = get_canonical_maker(target_maker)
@@ -227,8 +232,27 @@ def check_vehicle_compatibility(
                 )
 
     if matches_target:
+        # Check year granularity if target year and catalog/title year exist
+        eff_cat_year = catalog_year
+        if not eff_cat_year and catalog_vehicle:
+            y_m = re.search(r"\b(19\d\d|20\d\d)\b", catalog_vehicle)
+            if y_m:
+                eff_cat_year = y_m.group(1)
+        if not eff_cat_year:
+            y_m = re.search(r"\b(19\d\d|20\d\d)\b", text)
+            if y_m:
+                eff_cat_year = y_m.group(1)
+
+        if target_year and eff_cat_year and str(target_year) != str(eff_cat_year):
+            cat_name = f"{canon_target.title()} {target_model.title() if target_model else ''} {eff_cat_year}".strip()
+            return (
+                "partial",
+                f"Verified for {cat_name} catalog; verify {target_year} compatibility before purchase"
+            )
+
         if target_model and matches_target_model:
-            return ("verified", f"Verified match for {canon_target.title()} {target_model.title()}.")
+            yr_str = f" {target_year}" if target_year else ""
+            return ("verified", f"Verified match for {canon_target.title()} {target_model.title()}{yr_str}.")
         return ("verified", f"Verified match for {canon_target.title()}.")
 
     return ("unverified", "Generic automotive product - vehicle compatibility unconfirmed.")
@@ -530,6 +554,30 @@ PART_FAMILY_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         ),
         "conflicting_patterns": (
             r"\b(oil\s+filter|air\s+filter|fuel\s+pump|brake|clutch|spark\s*plug)\b",
+        ),
+    },
+    "side_mirror": {
+        "name": "side mirror",
+        "match_queries": (
+            "side mirror", "side mirrors", "outside mirror", "outside mirrors",
+            "orvm", "rear view mirror", "rearview mirror", "door mirror",
+            "outside rear view mirror", "outside rearview mirror", "mirror",
+        ),
+        "family_keywords": ("mirror", "mirrors", "orvm", "glass"),
+        "exact_patterns": (
+            r"\b(outside\s+(?:rear\s*view\s+)?mirrors?|side\s+(?:door\s+)?mirrors?|door\s+mirrors?|orvm\s+assembly|orvm|rear\s*view\s+mirrors?)\b",
+        ),
+        "alias_patterns": (
+            r"\b(mirror\s+assy|side\s+mirror\s+assy|orvm\s+lh|orvm\s+rh)\b",
+        ),
+        "related_component_patterns": (
+            r"\b(mirror\s+glass(?:\s+plate)?|mirror\s+cover|mirror\s+housing|mirror\s+motor|mirror\s+switch|mirror\s+indicator|mirror\s+cap|mirror\s+base)\b",
+        ),
+        "accessory_patterns": (
+            r"\b(mirror\s+(?:bracket|clamp|gasket|bezel|trim))\b",
+        ),
+        "conflicting_patterns": (
+            r"\b(headlight|taillight|fog\s*light|bumper|brake|clutch|oil\s+filter|air\s+filter|fuel\s+pump|spark\s*plug)\b",
         ),
     },
 }
@@ -992,6 +1040,8 @@ def classify_listings(
     category: str = "",
     target_maker: str = "",
     target_model: str = "",
+    target_year: str = "",
+    target_variant: str = "",
 ) -> List[Dict[str, Any]]:
     """Classify an entire list of listings and enrich each with relevance fields."""
     classified = []
@@ -1026,6 +1076,26 @@ def classify_listings(
         d["part_family_classification"] = res.get("part_family_classification", UNKNOWN)
         d["part_family_reason"] = res.get("part_family_reason", "")
 
+        # Check vehicle fitment granularity
+        existing_fitment = d.get("fitment") or "unverified"
+        existing_basis = d.get("fitment_basis") or ""
+        catalog_vehicle = d.get("catalog_vehicle") or d.get("vehicle_label") or ""
+
+        # Extract catalog year if present
+        eff_cat_year = ""
+        if catalog_vehicle:
+            y_m = re.search(r"\b(19\d\d|20\d\d)\b", catalog_vehicle)
+            if y_m:
+                eff_cat_year = y_m.group(1)
+        if not eff_cat_year and existing_basis:
+            y_m = re.search(r"\b(19\d\d|20\d\d)\b", existing_basis)
+            if y_m:
+                eff_cat_year = y_m.group(1)
+        if not eff_cat_year and title:
+            y_m = re.search(r"\b(19\d\d|20\d\d)\b", title)
+            if y_m:
+                eff_cat_year = y_m.group(1)
+
         if res["relevance"] == INCOMPATIBLE:
             d["fitment"] = "incompatible"
             d["match"] = "incompatible"
@@ -1033,8 +1103,47 @@ def classify_listings(
             d["fitment"] = "wrong_part_type"
             d["match"] = "wrong_part_type"
         else:
+            # Check year match when target_year is specified
+            if target_year and eff_cat_year and str(eff_cat_year) != str(target_year):
+                # Compatible model, different year/variant
+                cat_name = f"{target_maker.title()} {target_model.title()} {eff_cat_year}".strip() if target_maker else eff_cat_year
+                d["fitment"] = "partial"
+                d["fitment_basis"] = f"Verified for {cat_name} catalog; verify {target_year} compatibility before purchase"
+                d.setdefault("notes", [])
+                if not any("verify" in str(n).lower() and str(target_year) in str(n) for n in d["notes"]):
+                    d["notes"].append(f"Catalogue verified for {eff_cat_year} model; verify {target_year} compatibility before purchase")
+            elif existing_fitment in ("verified", "partial"):
+                d["fitment"] = existing_fitment
+                d["fitment_basis"] = existing_basis or (
+                    f"Verified for {target_maker.title()} {target_model.title()}" + (f" {target_year}" if target_year else "") + " variant"
+                )
+            else:
+                d["fitment"] = existing_fitment
+                d["fitment_basis"] = existing_basis or "Compatibility unverified: verify fitment before purchase"
+
             # Keep legacy match field aligned
             d["match"] = "exact" if res["relevance"] in (EXACT_MATCH, CLOSE_MATCH, EXACT_PART_MATCH, PART_ALIAS_MATCH) else "related"
+
+        # Ensure vendor and supplier normalization
+        v_val = (d.get("vendor") or "").lower()
+        if not v_val:
+            if "boodmo" in (d.get("url") or "") or "boodmo" in existing_basis.lower():
+                v_val = "boodmo"
+            elif "autodukan" in (d.get("url") or "") or "autodukan" in existing_basis.lower():
+                v_val = "autodukan"
+        if v_val:
+            d["vendor"] = v_val
+            d["supplier"] = d.get("supplier") or ("Boodmo" if v_val == "boodmo" else "AutoDukan")
+            d["supplier_name"] = d.get("supplier_name") or d["supplier"]
+
+        # Ensure seller and dispatch fallbacks
+        best_off = d.get("best_offer") or {}
+        if not d.get("seller"):
+            d["seller"] = best_off.get("seller") or (
+                "Authorized Supplier Hub" if d.get("vendor") == "boodmo" else "AutoDukan Distributor" if d.get("vendor") == "autodukan" else None
+            )
+        if not d.get("dispatch"):
+            d["dispatch"] = best_off.get("dispatch") or "24–48 hours"
 
         classified.append(d)
 

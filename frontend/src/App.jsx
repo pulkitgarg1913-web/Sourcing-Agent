@@ -38,6 +38,40 @@ const INITIAL_SUPPLIERS = [
   },
 ]
 
+const getListingCompositeKey = (l) => {
+  const vendor = (l.vendor || l.supplier || l.supplier_name || "").toLowerCase().trim()
+  const partNo = (l.part_number || l.partNumber || "").toLowerCase().trim()
+  const title = (l.title || "").toLowerCase().trim()
+  const price = l.price !== null && l.price !== undefined ? l.price : ""
+  const url = (l.url || "").trim()
+  const isGenericSearch = !url || url.includes("products-list?search=") || url.includes("/search?")
+  const urlKey = isGenericSearch ? "" : url
+  if (partNo && vendor) {
+    return `${vendor}::${partNo}::${title}`
+  }
+  return `${vendor}::${title}::${price}::${urlKey}`
+}
+
+const normalizeListingData = (l, defaultVendor = "") => {
+  const rawVendor = (l.vendor || defaultVendor || l.supplier || l.supplier_name || "").toLowerCase()
+  const vendor = rawVendor.includes("autodukan")
+    ? "autodukan"
+    : rawVendor.includes("boodmo")
+    ? "boodmo"
+    : (l.url && l.url.includes("autodukan.com"))
+    ? "autodukan"
+    : "boodmo"
+  const supplier = vendor === "autodukan" ? "AutoDukan" : "Boodmo"
+  return {
+    ...l,
+    vendor,
+    supplier: l.supplier || supplier,
+    supplier_name: l.supplier_name || supplier,
+    seller: l.seller || l.best_offer?.seller || (vendor === "boodmo" ? "Authorized Supplier Hub" : "AutoDukan Distributor"),
+    dispatch: l.dispatch || l.best_offer?.dispatch || "24–48 hours",
+  }
+}
+
 export default function App() {
   const [threadId, setThreadId] = useState(() => crypto.randomUUID())
   const [connected, setConnected] = useState(false)
@@ -186,9 +220,16 @@ export default function App() {
         // 2. Incremental Product Results Addition!
         if (event.results && event.results.length > 0) {
           setListings((prevListings) => {
-            // Merge without duplicates by URL or part number
-            const existingUrls = new Set(prevListings.map((l) => l.url))
-            const newItems = event.results.filter((l) => !existingUrls.has(l.url))
+            const existingKeys = new Set(prevListings.map(getListingCompositeKey))
+            const normalizedItems = event.results.map((l) => normalizeListingData(l, event.vendor))
+            const newItems = []
+            for (const item of normalizedItems) {
+              const key = getListingCompositeKey(item)
+              if (!existingKeys.has(key)) {
+                existingKeys.add(key)
+                newItems.push(item)
+              }
+            }
             return [...prevListings, ...newItems]
           })
         }
@@ -255,12 +296,39 @@ export default function App() {
         }
         if (event.outcome?.listings && event.outcome.listings.length > 0) {
           setListings((prevListings) => {
-            const existingUrls = new Set(prevListings.map((l) => l.url))
-            const newItems = event.outcome.listings.filter((l) => !existingUrls.has(l.url))
+            const existingKeys = new Set(prevListings.map(getListingCompositeKey))
+            const normalizedItems = event.outcome.listings.map((l) => normalizeListingData(l))
+            const newItems = []
+            for (const item of normalizedItems) {
+              const key = getListingCompositeKey(item)
+              if (!existingKeys.has(key)) {
+                existingKeys.add(key)
+                newItems.push(item)
+              }
+            }
             return [...prevListings, ...newItems]
           })
         }
         if (event.outcome?.vendor_outcomes && event.outcome.vendor_outcomes.length > 0) {
+          // Fallback merge: ensure any listings inside vendor_outcomes are also captured
+          const allVoListings = event.outcome.vendor_outcomes.flatMap((vo) =>
+            (vo.listings || []).map((l) => normalizeListingData(l, vo.vendor))
+          )
+          if (allVoListings.length > 0) {
+            setListings((prevListings) => {
+              const existingKeys = new Set(prevListings.map(getListingCompositeKey))
+              const newItems = []
+              for (const item of allVoListings) {
+                const key = getListingCompositeKey(item)
+                if (!existingKeys.has(key)) {
+                  existingKeys.add(key)
+                  newItems.push(item)
+                }
+              }
+              return [...prevListings, ...newItems]
+            })
+          }
+
           setSuppliers((prev) =>
             prev.map((s) => {
               const vo = event.outcome.vendor_outcomes.find((v) => v.vendor === s.vendor)

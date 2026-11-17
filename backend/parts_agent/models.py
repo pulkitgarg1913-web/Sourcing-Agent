@@ -76,6 +76,11 @@ class Listing:
     relevance_score: float = 1.0            # 0.0 to 1.0 confidence
     relevance_reason: str = ""              # Explanation for classification
     product_type: str = "complete_assembly" # complete_assembly | component | accessory
+    vendor: Optional[str] = None            # "boodmo" | "autodukan"
+    supplier: Optional[str] = None          # "Boodmo" | "AutoDukan"
+    supplier_name: Optional[str] = None     # "Boodmo" | "AutoDukan"
+    seller: Optional[str] = None
+    dispatch: Optional[str] = None
 
     def to_dict(self) -> dict:
         return asdict(self)

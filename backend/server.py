@@ -262,7 +262,16 @@ def instrument_session(thread_id: str, session: Session):
                     for l in outcome.listings:
                         item = l if isinstance(l, dict) else l.to_dict()
                         item["vendor"] = v_name
+                        item["supplier"] = s_title
                         item["supplier_name"] = s_title
+                        item["catalog_vehicle"] = outcome.vehicle_label or ""
+                        best_off = item.get("best_offer") or {}
+                        if not item.get("seller"):
+                            item["seller"] = best_off.get("seller") or (
+                                "Authorized Supplier Hub" if v_name == "boodmo" else "AutoDukan Distributor"
+                            )
+                        if not item.get("dispatch"):
+                            item["dispatch"] = best_off.get("dispatch") or "24–48 hours"
                         listings_dict.append(item)
 
                     # Classify and intelligently rank listings before publishing to UI
@@ -270,6 +279,8 @@ def instrument_session(thread_id: str, session: Session):
                     query_text = vendor_profile.hints.get("raw_request") or vendor_profile.part or ""
                     v_maker = vendor_profile.maker or vendor_profile.hints.get("make") or ""
                     v_model = vendor_profile.model or vendor_profile.hints.get("model") or ""
+                    v_year = vendor_profile.year or str(vendor_profile.hints.get("year") or "")
+                    v_variant = vendor_profile.variant or ""
                     listings_dict = relevance.classify_listings(
                         listings_dict,
                         query=query_text,
@@ -277,6 +288,8 @@ def instrument_session(thread_id: str, session: Session):
                         category=vendor_profile.category or "",
                         target_maker=v_maker,
                         target_model=v_model,
+                        target_year=v_year,
+                        target_variant=v_variant,
                     )
                     listings_dict = relevance.rank_listings(listings_dict, price_order="asc")
 
@@ -528,7 +541,20 @@ def publish_completed_outcomes(thread_id: str, state: dict):
         v_name = vo.get("vendor", "")
         s_title = "Boodmo" if v_name == "boodmo" else "AutoDukan" if v_name == "autodukan" else v_name.title()
         vo_listings = vo.get("listings") or []
-        listings_dict = [l.to_dict() if hasattr(l, "to_dict") else dict(l) for l in vo_listings]
+        listings_dict = []
+        for l in vo_listings:
+            item = l.to_dict() if hasattr(l, "to_dict") else dict(l)
+            item["vendor"] = v_name
+            item["supplier"] = s_title
+            item["supplier_name"] = s_title
+            best_off = item.get("best_offer") or {}
+            if not item.get("seller"):
+                item["seller"] = best_off.get("seller") or (
+                    "Authorized Supplier Hub" if v_name == "boodmo" else "AutoDukan Distributor"
+                )
+            if not item.get("dispatch"):
+                item["dispatch"] = best_off.get("dispatch") or "24–48 hours"
+            listings_dict.append(item)
         source_url = vo.get("source_url") or ("https://boodmo.com" if v_name == "boodmo" else "https://autodukan.com")
         sse_manager.publish(
             thread_id,

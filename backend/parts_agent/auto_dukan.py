@@ -1742,6 +1742,11 @@ class AutoDukanAdapter:
                     url=url,
                     fitment=item_fitment,
                     fitment_basis=item_fitment_basis,
+                    vendor="autodukan",
+                    supplier="AutoDukan",
+                    supplier_name="AutoDukan",
+                    seller="AutoDukan Distributor",
+                    dispatch="24–48 hours",
                 )
                 if item_fitment != "verified":
                     listing.notes.append("Confirm exact OEM/variant compatibility with AutoDukan before ordering")

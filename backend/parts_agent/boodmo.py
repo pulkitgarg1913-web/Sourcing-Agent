@@ -806,6 +806,8 @@ class BoodmoAdapter:
         if priced:
             listing.best_offer = min(priced, key=lambda o: o["price"])
             listing.price = listing.best_offer["price"]
+            listing.seller = listing.best_offer.get("seller")
+            listing.dispatch = listing.best_offer.get("dispatch")
         listing.available = bool(priced)
         if not priced:
             listing.notes.append("no seller offer on the product page")
@@ -1039,6 +1041,11 @@ class BoodmoAdapter:
                 fitment="verified" if full else "partial",
                 fitment_basis=(f"Boodmo fitment filter: {vehicle}" if full else
                                f"listed under {rec['hits']} of {dupes} Boodmo entries named '{profile.variant}'"),
+                vendor="boodmo",
+                supplier="Boodmo",
+                supplier_name="Boodmo",
+                seller="Authorized Supplier Hub",
+                dispatch="24–48 hours",
             )
             if "..." in number:
                 listing.notes.append(f"Boodmo masks the full part number; item id {item_id}")

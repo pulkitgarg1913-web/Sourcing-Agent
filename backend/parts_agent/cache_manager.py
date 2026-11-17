@@ -192,6 +192,8 @@ def get_cached_search(maker: Optional[str], model: Optional[str], year: Optional
                 for outcome in raw_data:
                     outcome["is_cached"] = True
                     outcome["cached_minutes_ago"] = age_minutes
+                    v_name = outcome.get("vendor", "")
+                    s_title = "Boodmo" if v_name == "boodmo" else "AutoDukan" if v_name == "autodukan" else v_name.title()
 
                     if is_demo:
                         outcome["is_demo"] = True
@@ -208,7 +210,20 @@ def get_cached_search(maker: Optional[str], model: Optional[str], year: Optional
                             l.setdefault("notes", [])
                             l["notes"].append(f"Cached search result (scraped {age_minutes}m ago)")
 
-                    # If retrieved through fallback (year or variant generic), mark fitment as unverified
+                    # Ensure vendor, supplier, seller, and dispatch on all cached listings
+                    for l in outcome.get("listings", []):
+                        l["vendor"] = v_name
+                        l["supplier"] = s_title
+                        l["supplier_name"] = s_title
+                        best_off = l.get("best_offer") or {}
+                        if not l.get("seller"):
+                            l["seller"] = best_off.get("seller") or (
+                                "Authorized Supplier Hub" if v_name == "boodmo" else "AutoDukan Distributor"
+                            )
+                        if not l.get("dispatch"):
+                            l["dispatch"] = best_off.get("dispatch") or "24–48 hours"
+
+                    # If retrieved through fallback (year or variant generic), mark fitment
                     if is_fallback:
                         for l in outcome.get("listings", []):
                             if fallback_reason == "year_fallback":
@@ -328,18 +343,23 @@ def _preseed_demo_cache():
         # 1. Tata Nexon Side Mirror
         {
             "keys": [
+                "tata:nexon:2026:side_mirror", "tata:nexon:2026:outside_mirror",
+                "tata:nexon:2026:side_mirrors", "tata:nexon:2026:orvm",
+                "tata:nexon:2026:1.2l pure+ amt:outside_mirror", "tata:nexon:2026:1.2l pure+ amt:side_mirror",
                 "tata:nexon:2024:side_mirror", "tata:nexon:2024:outside_mirror",
+                "tata:nexon:2024:1.2l pure+ amt:outside_mirror", "tata:nexon:2024:1.2l pure+ amt:side_mirror",
                 "tata:nexon:2023:side_mirror", "tata:nexon:2022:side_mirror",
                 "tata:nexon:2021:side_mirror", "tata:nexon:2020:side_mirror",
-                "tata:nexon:2024:side_mirrors", "tata:nexon:2024:orvm"
+                "tata:nexon:2024:side_mirrors", "tata:nexon:2024:orvm",
+                "tata:nexon:outside_mirror", "tata:nexon:side_mirror"
             ],
-            "vehicle": "Tata Nexon 2024",
-            "part": "side mirror",
+            "vehicle": "TATA NEXON 2026 1.2L PURE+ AMT / Petrol / BS6.2",
+            "part": "outside mirror",
             "outcomes": [
                 {
                     "vendor": "boodmo",
                     "status": "ok",
-                    "vehicle_label": "Tata Nexon 2024",
+                    "vehicle_label": "TATA NEXON 2026 1.2L PURE+ AMT / Petrol / BS6.2",
                     "source_url": "https://boodmo.com/catalog/3674-mirrors/",
                     "message": "Boodmo verified 3 parts for Tata Nexon Outside Mirror.",
                     "listings": [
@@ -352,8 +372,19 @@ def _preseed_demo_cache():
                             "url": "https://boodmo.com/catalog/part-outside_rear_view_mirror_right_side-542781100115/",
                             "origin": "OEM",
                             "fitment": "verified",
-                            "fitment_basis": "Boodmo fitment filter: Tata Nexon 2024",
+                            "fitment_basis": "Boodmo fitment filter: Tata Nexon 2026 variant",
                             "available": True,
+                            "vendor": "boodmo",
+                            "supplier": "Boodmo",
+                            "supplier_name": "Boodmo",
+                            "seller": "Authorized Supplier Hub",
+                            "dispatch": "24–48 hours",
+                            "best_offer": {
+                                "seller": "Authorized Supplier Hub",
+                                "dispatch": "24–48 hours",
+                                "stock": "In Stock",
+                                "price": 1850.0
+                            },
                             "relevance": "EXACT_MATCH",
                             "relevance_score": 1.0,
                             "relevance_reason": "Exact fitment outside rear view mirror assembly for Tata Nexon",
@@ -369,8 +400,19 @@ def _preseed_demo_cache():
                             "url": "https://boodmo.com/catalog/part-outside_rear_view_mirror_left_side-542781100114/",
                             "origin": "OEM",
                             "fitment": "verified",
-                            "fitment_basis": "Boodmo fitment filter: Tata Nexon 2024",
+                            "fitment_basis": "Boodmo fitment filter: Tata Nexon 2026 variant",
                             "available": True,
+                            "vendor": "boodmo",
+                            "supplier": "Boodmo",
+                            "supplier_name": "Boodmo",
+                            "seller": "Authorized Supplier Hub",
+                            "dispatch": "24–48 hours",
+                            "best_offer": {
+                                "seller": "Authorized Supplier Hub",
+                                "dispatch": "24–48 hours",
+                                "stock": "In Stock",
+                                "price": 1850.0
+                            },
                             "relevance": "EXACT_MATCH",
                             "relevance_score": 1.0,
                             "relevance_reason": "Exact fitment outside rear view mirror assembly for Tata Nexon",
@@ -386,8 +428,19 @@ def _preseed_demo_cache():
                             "url": "https://boodmo.com/catalog/part-orvm_assembly_lh-8100114/",
                             "origin": "Aftermarket",
                             "fitment": "verified",
-                            "fitment_basis": "Boodmo fitment filter: Tata Nexon 2024",
+                            "fitment_basis": "Boodmo fitment filter: Tata Nexon 2026 variant",
                             "available": True,
+                            "vendor": "boodmo",
+                            "supplier": "Boodmo",
+                            "supplier_name": "Boodmo",
+                            "seller": "Authorized Supplier Hub",
+                            "dispatch": "24–48 hours",
+                            "best_offer": {
+                                "seller": "Authorized Supplier Hub",
+                                "dispatch": "24–48 hours",
+                                "stock": "In Stock",
+                                "price": 1420.0
+                            },
                             "relevance": "EXACT_MATCH",
                             "relevance_score": 0.95,
                             "relevance_reason": "High quality OES aftermarket replacement by UNO Minda",
@@ -409,11 +462,22 @@ def _preseed_demo_cache():
                             "part_number": "542781100115",
                             "price": 1799.0,
                             "mrp": 2050.0,
-                            "url": "https://autodukan.com/products-list?search=Tata+Nexon+Side+Mirror",
+                            "url": "https://autodukan.com/products-list?search=Tata+Nexon+Side+Door+Mirror+Assembly+RH",
                             "origin": "OEM",
-                            "fitment": "verified",
-                            "fitment_basis": "AutoDukan verified vehicle catalog for Tata Nexon",
+                            "fitment": "partial",
+                            "fitment_basis": "Verified for Tata Nexon 2024 catalog; verify 2026 compatibility before purchase",
                             "available": True,
+                            "vendor": "autodukan",
+                            "supplier": "AutoDukan",
+                            "supplier_name": "AutoDukan",
+                            "seller": "AutoDukan Distributor",
+                            "dispatch": "24–48 hours",
+                            "best_offer": {
+                                "seller": "AutoDukan Distributor",
+                                "dispatch": "24–48 hours",
+                                "stock": "In Stock",
+                                "price": 1799.0
+                            },
                             "relevance": "EXACT_MATCH",
                             "relevance_score": 1.0,
                             "relevance_reason": "Direct OEM replacement mirror for Tata Nexon",
@@ -426,11 +490,22 @@ def _preseed_demo_cache():
                             "part_number": "LX-MG-8812",
                             "price": 420.0,
                             "mrp": 550.0,
-                            "url": "https://autodukan.com/products-list?search=Tata+Nexon+Side+Mirror",
+                            "url": "https://autodukan.com/products-list?search=Tata+Nexon+Mirror+Glass+Plate+with+Base+RH",
                             "origin": "Aftermarket",
-                            "fitment": "verified",
-                            "fitment_basis": "AutoDukan verified vehicle catalog for Tata Nexon",
+                            "fitment": "partial",
+                            "fitment_basis": "Verified for Tata Nexon 2024 catalog; verify 2026 compatibility before purchase",
                             "available": True,
+                            "vendor": "autodukan",
+                            "supplier": "AutoDukan",
+                            "supplier_name": "AutoDukan",
+                            "seller": "AutoDukan Distributor",
+                            "dispatch": "24–48 hours",
+                            "best_offer": {
+                                "seller": "AutoDukan Distributor",
+                                "dispatch": "24–48 hours",
+                                "stock": "In Stock",
+                                "price": 420.0
+                            },
                             "relevance": "COMPONENT",
                             "relevance_score": 0.85,
                             "relevance_reason": "Replacement mirror glass plate only",
@@ -695,22 +770,32 @@ def _preseed_demo_cache():
                     outcome["is_demo"] = True
                     outcome["is_cached"] = True
                     outcome["source_type"] = "demo"
+                    v_name = outcome.get("vendor", "")
+                    s_title = "Boodmo" if v_name == "boodmo" else "AutoDukan" if v_name == "autodukan" else v_name.title()
                     for l in outcome.get("listings", []):
                         l.setdefault("match", "exact")
-                        l.setdefault("best_offer", {
-                            "seller": "Authorized Supplier Hub",
+                        l["vendor"] = l.get("vendor") or v_name
+                        l["supplier"] = l.get("supplier") or s_title
+                        l["supplier_name"] = l.get("supplier_name") or s_title
+                        best_off = l.setdefault("best_offer", {
+                            "seller": "Authorized Supplier Hub" if v_name == "boodmo" else "AutoDukan Distributor",
                             "stock": "in stock",
-                            "dispatch": "24-48 hrs"
+                            "dispatch": "24–48 hours"
                         })
+                        if not l.get("seller"):
+                            l["seller"] = best_off.get("seller")
+                        if not l.get("dispatch"):
+                            l["dispatch"] = best_off.get("dispatch")
                 data_json = json.dumps(rec["outcomes"])
                 # Register both 4-part legacy keys and 5-part normalized keys
                 keys_to_store = set()
                 for k in rec["keys"]:
-                    keys_to_store.add(k)
                     parts = k.split(":")
+                    norm_k = ":".join(normalize_term(p) for p in parts)
+                    keys_to_store.add(norm_k)
                     if len(parts) == 4:
                         # Add 5-part key with empty variant (maker:model:year::part)
-                        keys_to_store.add(f"{parts[0]}:{parts[1]}:{parts[2]}::{parts[3]}")
+                        keys_to_store.add(f"{normalize_term(parts[0])}:{normalize_term(parts[1])}:{normalize_term(parts[2])}::{normalize_term(parts[3])}")
                 for k in keys_to_store:
                     conn.execute("""
                         INSERT OR REPLACE INTO search_cache (key, vehicle_label, part_name, data, created_at, expires_at)

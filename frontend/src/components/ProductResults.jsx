@@ -101,13 +101,22 @@ export default function ProductResults({
     return list
   }
 
-  // Separate listings by adapter
+  const isBoodmo = (l) => {
+    const v = (l.vendor || l.supplier || l.supplier_name || "").toLowerCase()
+    return v.includes("boodmo") || (l.url && l.url.toLowerCase().includes("boodmo"))
+  }
+  const isAutoDukan = (l) => {
+    const v = (l.vendor || l.supplier || l.supplier_name || "").toLowerCase()
+    return v.includes("autodukan") || (l.url && l.url.toLowerCase().includes("autodukan"))
+  }
+
+  // Separate listings by adapter with robust supplier fallback
   const boodmoRaw = useMemo(
-    () => listings.filter((l) => l.vendor === "boodmo"),
+    () => listings.filter(isBoodmo),
     [listings]
   )
   const autodukanRaw = useMemo(
-    () => listings.filter((l) => l.vendor === "autodukan"),
+    () => listings.filter(isAutoDukan),
     [listings]
   )
 
@@ -125,8 +134,8 @@ export default function ProductResults({
     const valid = listings.filter((l) => l.relevance !== "IRRELEVANT")
     return {
       all: valid.length,
-      boodmo: valid.filter((l) => l.vendor === "boodmo").length,
-      autodukan: valid.filter((l) => l.vendor === "autodukan").length,
+      boodmo: valid.filter(isBoodmo).length,
+      autodukan: valid.filter(isAutoDukan).length,
     }
   }, [listings])
 
@@ -219,8 +228,11 @@ export default function ProductResults({
   // Helper to render a table row
   const renderTableRow = (item, idx) => {
     const bestOffer = item.best_offer || {}
-    const hasOffer = Boolean(bestOffer.seller || item.offers?.length > 0)
+    const hasOffer = Boolean(bestOffer.seller || item.offers?.length > 0 || item.seller)
     const isPriceVerified = hasOffer && item.price !== null && item.price !== undefined
+    const supplierName = item.supplier || (item.vendor === "autodukan" ? "AutoDukan" : "Boodmo")
+    const seller = item.seller || bestOffer.seller || "Not provided"
+    const dispatch = item.dispatch || bestOffer.dispatch || "Not provided"
 
     const relevanceBadgeConfig = {
       EXACT_MATCH: {
@@ -256,13 +268,23 @@ export default function ProductResults({
 
     return (
       <tr key={idx} className="hover:bg-slate-50/80 transition-colors group">
-        {/* 1. Title & Relevance */}
+        {/* 1. Title, Supplier & Relevance */}
         <td className="py-2.5 px-3 max-w-xs">
           <div className="font-semibold text-slate-900 group-hover:text-blue-600 transition-colors line-clamp-2 text-xs">
-            {item.title || "Automotive Part"}
+            {item.title || "Not provided"}
           </div>
 
           <div className="flex flex-wrap items-center gap-1 mt-1">
+            <span
+              className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border ${
+                item.vendor === "autodukan"
+                  ? "bg-orange-50 text-orange-700 border-orange-200"
+                  : "bg-red-50 text-red-700 border-red-200"
+              } font-semibold`}
+            >
+              {supplierName}
+            </span>
+
             <span
               className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border ${relConfig.className}`}
               title={item.relevance_reason || relConfig.label}
@@ -309,31 +331,23 @@ export default function ProductResults({
               )}
             </div>
           ) : (
-            <span className="text-slate-400 italic text-[11px]">No price</span>
+            <span className="text-slate-400 italic text-[11px]">Not provided</span>
           )}
         </td>
 
         {/* 3. Seller & Dispatch */}
         <td className="py-2.5 px-3 max-w-[140px]">
-          {bestOffer.seller ? (
-            <div>
-              <span
-                className="font-medium text-slate-800 block truncate text-xs"
-                title={bestOffer.seller}
-              >
-                {bestOffer.seller}
-              </span>
-              {bestOffer.dispatch && (
-                <span className="text-[10px] text-slate-500 block">
-                  {bestOffer.dispatch}
-                </span>
-              )}
-            </div>
-          ) : (
-            <span className="text-slate-400 italic text-[10px]">
-              Seller not listed
+          <div>
+            <span
+              className="font-medium text-slate-800 block truncate text-xs"
+              title={seller}
+            >
+              {seller}
             </span>
-          )}
+            <span className="text-[10px] text-slate-500 block truncate" title={dispatch}>
+              {dispatch}
+            </span>
+          </div>
         </td>
 
         {/* 4. Stock Availability */}
@@ -341,17 +355,17 @@ export default function ProductResults({
           {item.available === true ? (
             <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200">
               <CheckCircle2 className="w-3 h-3" />
-              <span>{bestOffer.stock || "In Stock"}</span>
+              <span>{bestOffer.stock || "In stock"}</span>
             </span>
           ) : item.available === false ? (
             <span className="inline-flex items-center gap-1 text-[10px] font-medium text-rose-700 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-200">
               <XCircle className="w-3 h-3" />
-              <span>Out of Stock</span>
+              <span>Out of stock</span>
             </span>
           ) : (
             <span className="inline-flex items-center gap-1 text-[10px] font-medium text-slate-600 bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200">
               <HelpCircle className="w-3 h-3 text-slate-400" />
-              <span>Unchecked</span>
+              <span>Unknown</span>
             </span>
           )}
         </td>
@@ -368,42 +382,50 @@ export default function ProductResults({
               )}
             </div>
           ) : (
-            <span className="text-slate-400">—</span>
+            <span className="text-slate-400 italic text-[11px]">Not provided</span>
           )}
         </td>
 
         {/* 6. Brand */}
         <td className="py-2.5 px-3 whitespace-nowrap font-medium text-slate-800 text-xs">
-          {item.brand || "—"}
+          {item.brand || "Not provided"}
         </td>
 
-        {/* 7. Fitment */}
-        <td className="py-2.5 px-3 whitespace-nowrap">
-          {item.fitment === "verified" ? (
-            <span
-              className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded-md border border-emerald-200"
-              title={item.fitment_basis || "Verified via catalog filter"}
+        {/* 7. Fitment & Fitment Basis */}
+        <td className="py-2.5 px-3 min-w-[150px] max-w-[220px]">
+          <div>
+            {item.fitment === "verified" ? (
+              <span
+                className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded-md border border-emerald-200"
+                title={item.fitment_basis || "Verified via catalog filter"}
+              >
+                <ShieldCheck className="w-2.5 h-2.5" />
+                <span>Verified</span>
+              </span>
+            ) : item.fitment === "partial" ? (
+              <span
+                className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded-md border border-amber-200"
+                title={item.fitment_basis || "Partial variant catalog match"}
+              >
+                <ShieldAlert className="w-2.5 h-2.5" />
+                <span>Partial</span>
+              </span>
+            ) : (
+              <span
+                className="inline-flex items-center gap-1 text-[10px] font-medium text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded-md border border-slate-200"
+                title={item.fitment_basis || "Confirm compatibility"}
+              >
+                <HelpCircle className="w-2.5 h-2.5 text-slate-400" />
+                <span>Unverified</span>
+              </span>
+            )}
+            <div
+              className="text-[10px] text-slate-500 mt-0.5 leading-tight line-clamp-2"
+              title={item.fitment_basis || "Not provided"}
             >
-              <ShieldCheck className="w-2.5 h-2.5" />
-              <span>Verified</span>
-            </span>
-          ) : item.fitment === "partial" ? (
-            <span
-              className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded-md border border-amber-200"
-              title={item.fitment_basis || "Partial variant catalog match"}
-            >
-              <ShieldAlert className="w-2.5 h-2.5" />
-              <span>Partial</span>
-            </span>
-          ) : (
-            <span
-              className="inline-flex items-center gap-1 text-[10px] font-medium text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded-md border border-slate-200"
-              title={item.fitment_basis || "Confirm compatibility"}
-            >
-              <HelpCircle className="w-2.5 h-2.5 text-slate-400" />
-              <span>Unverified</span>
-            </span>
-          )}
+              {item.fitment_basis || "Not provided"}
+            </div>
+          </div>
         </td>
 
         {/* 8. Action Link */}
@@ -419,7 +441,7 @@ export default function ProductResults({
               <ExternalLink className="w-2.5 h-2.5" />
             </a>
           ) : (
-            <span className="text-slate-400 text-xs">—</span>
+            <span className="text-slate-400 italic text-[11px]">Not provided</span>
           )}
         </td>
       </tr>
@@ -431,28 +453,6 @@ export default function ProductResults({
     const isCompleted = supplierInfo?.status === "Completed"
     const isFailed = supplierInfo?.status === "Failed"
     const isSearching = !isCompleted && !isFailed && supplierInfo?.status !== "Waiting" && supplierInfo?.status !== "Idle"
-
-    const primaryItems = items.filter(
-      (item) => item.relevance !== "ACCESSORY" && item.relevance !== "COMPONENT"
-    )
-    const accessoryItems = items.filter(
-      (item) => item.relevance === "ACCESSORY" || item.relevance === "COMPONENT"
-    )
-
-    // Promote components if 0 exact matches exist
-    const finalPrimary =
-      primaryItems.length === 0 && accessoryItems.length > 0
-        ? accessoryItems.filter((x) => x.relevance === "COMPONENT")
-        : primaryItems
-    const finalAccessories =
-      primaryItems.length === 0 && accessoryItems.length > 0
-        ? accessoryItems.filter((x) => x.relevance === "ACCESSORY")
-        : accessoryItems
-
-    const showAcc = Boolean(showAccessoriesMap[vendor])
-    const toggleAcc = () => {
-      setShowAccessoriesMap((prev) => ({ ...prev, [vendor]: !prev[vendor] }))
-    }
 
     const inStockCount = items.filter((x) => x.available === true).length
     const cheapest = items
@@ -534,72 +534,26 @@ export default function ProductResults({
           </div>
         ) : (
           <div className="flex-1 flex flex-col">
-            {/* Primary Table */}
+            {/* Dedicated Table with All Supplier Products */}
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse text-xs">
                 <thead>
                   <tr className="bg-slate-50 text-slate-600 border-b border-slate-200 font-semibold uppercase tracking-wider text-[10px]">
-                    <th className="py-2.5 px-3">Part Title &amp; Match</th>
+                    <th className="py-2.5 px-3">Part Title &amp; Supplier</th>
                     <th className="py-2.5 px-3">Price</th>
                     <th className="py-2.5 px-3">Seller / Dispatch</th>
                     <th className="py-2.5 px-3">Stock</th>
                     <th className="py-2.5 px-3">Part No.</th>
                     <th className="py-2.5 px-3">Brand</th>
-                    <th className="py-2.5 px-3">Fitment</th>
+                    <th className="py-2.5 px-3 min-w-[150px]">Fitment &amp; Basis</th>
                     <th className="py-2.5 px-3 text-right">Action</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 font-normal">
-                  {finalPrimary.map((item, idx) => renderTableRow(item, idx))}
+                  {items.map((item, idx) => renderTableRow(item, idx))}
                 </tbody>
               </table>
             </div>
-
-            {/* Expandable Accessories for this adapter */}
-            {finalAccessories.length > 0 && (
-              <div className="border-t border-slate-200 bg-slate-50/50 mt-auto">
-                <button
-                  type="button"
-                  onClick={toggleAcc}
-                  className="w-full px-3 py-2 flex items-center justify-between text-left text-xs font-semibold text-slate-700 hover:bg-slate-100 transition-colors"
-                >
-                  <div className="flex items-center gap-1.5">
-                    <Wrench className="w-3.5 h-3.5 text-slate-500" />
-                    <span>
-                      {title} Subcomponents &amp; Accessories ({finalAccessories.length})
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1 text-[11px] text-blue-600">
-                    <span>{showAcc ? "Hide" : "Show"}</span>
-                    {showAcc ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                  </div>
-                </button>
-
-                {showAcc && (
-                  <div className="overflow-x-auto border-t border-slate-200 bg-white">
-                    <table className="w-full text-left border-collapse text-xs">
-                      <thead>
-                        <tr className="bg-slate-50 text-slate-500 border-b border-slate-200 text-[10px] uppercase font-semibold">
-                          <th className="py-2 px-3">Component Title</th>
-                          <th className="py-2 px-3">Price</th>
-                          <th className="py-2 px-3">Seller</th>
-                          <th className="py-2 px-3">Stock</th>
-                          <th className="py-2 px-3">Part No.</th>
-                          <th className="py-2 px-3">Brand</th>
-                          <th className="py-2 px-3">Fitment</th>
-                          <th className="py-2 px-3 text-right">Action</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100 font-normal">
-                        {finalAccessories.map((item, idx) =>
-                          renderTableRow(item, `acc-${vendor}-${idx}`)
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
-            )}
           </div>
         )}
       </div>
