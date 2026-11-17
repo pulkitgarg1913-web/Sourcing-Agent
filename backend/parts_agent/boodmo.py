@@ -24,7 +24,7 @@ import uuid
 
 from playwright.async_api import Page, Browser
 
-from . import llm, variants
+from . import llm, variants, relevance
 from .browser_manager import get_browser_manager, CHROMIUM_ARGS, UA
 from .models import Listing, NeedInput, SearchOutcome, VehicleProfile
 from .perf_logger import perf_monitor
@@ -898,9 +898,29 @@ class BoodmoAdapter:
                     pass
             listings: list[Listing] = []
             for t in tiles:
+                clean_t = (t.get("title") or "").strip()
+                raw_b = t.get("brand") or profile.maker or ""
+                compat_status, _ = relevance.check_vehicle_compatibility(
+                    product_title=clean_t,
+                    product_brand=raw_b,
+                    target_maker=profile.maker or "",
+                    target_model=profile.model or "",
+                )
+                if compat_status == "incompatible":
+                    continue
+                req_p = profile.part or profile.hints.get("raw_request") or ""
+                if req_p:
+                    part_status, _ = relevance.check_part_family_compatibility(
+                        product_title=clean_t,
+                        requested_part=req_p,
+                        category=profile.category or "",
+                    )
+                    if part_status == relevance.WRONG_PART_TYPE:
+                        continue
+
                 number, item_id = _part_number(t.get("href") or "", t.get("number") or "")
                 listing = Listing(
-                    title=(t.get("title") or "").strip(), brand=t.get("brand") or profile.maker or "", part_number=number,
+                    title=clean_t, brand=raw_b, part_number=number,
                     price=_price(t.get("price")), mrp=_price(t.get("mrp")), url=BASE + (t.get("href") or ""),
                     fitment="unverified",
                     fitment_basis=f"Boodmo keyword search bar fallback for '{vehicle}'",
@@ -949,9 +969,29 @@ class BoodmoAdapter:
             tiles = await self._read_tiles()
             listings = []
             for t in tiles:
+                clean_t = (t.get("title") or "").strip()
+                raw_b = t.get("brand") or profile.maker or ""
+                compat_status, _ = relevance.check_vehicle_compatibility(
+                    product_title=clean_t,
+                    product_brand=raw_b,
+                    target_maker=profile.maker or "",
+                    target_model=profile.model or "",
+                )
+                if compat_status == "incompatible":
+                    continue
+                req_p = profile.part or profile.hints.get("raw_request") or ""
+                if req_p:
+                    part_status, _ = relevance.check_part_family_compatibility(
+                        product_title=clean_t,
+                        requested_part=req_p,
+                        category=profile.category or "",
+                    )
+                    if part_status == relevance.WRONG_PART_TYPE:
+                        continue
+
                 number, item_id = _part_number(t.get("href") or "", t.get("number") or "")
                 listing = Listing(
-                    title=(t.get("title") or "").strip(), brand=t.get("brand") or profile.maker or "", part_number=number,
+                    title=clean_t, brand=raw_b, part_number=number,
                     price=_price(t.get("price")), mrp=_price(t.get("mrp")), url=BASE + (t.get("href") or ""),
                     fitment="unverified",
                     fitment_basis=f"Boodmo keyword search bar fallback for '{vehicle}'",
@@ -971,10 +1011,30 @@ class BoodmoAdapter:
         listings: list[Listing] = []
         for href, rec in seen.items():
             t = rec["tile"]
+            clean_t = (t.get("title") or "").strip()
+            raw_b = t.get("brand") or ""
+            compat_status, _ = relevance.check_vehicle_compatibility(
+                product_title=clean_t,
+                product_brand=raw_b,
+                target_maker=profile.maker or "",
+                target_model=profile.model or "",
+            )
+            if compat_status == "incompatible":
+                continue
+            req_p = profile.part or profile.hints.get("raw_request") or ""
+            if req_p:
+                part_status, _ = relevance.check_part_family_compatibility(
+                    product_title=clean_t,
+                    requested_part=req_p,
+                    category=profile.category or "",
+                )
+                if part_status == relevance.WRONG_PART_TYPE:
+                    continue
+
             number, item_id = _part_number(href, t.get("number") or "")
             full = rec["hits"] == max(dupes, 1)
             listing = Listing(
-                title=(t.get("title") or "").strip(), brand=t.get("brand") or "", part_number=number,
+                title=clean_t, brand=raw_b, part_number=number,
                 price=_price(t.get("price")), mrp=_price(t.get("mrp")), url=BASE + href,
                 fitment="verified" if full else "partial",
                 fitment_basis=(f"Boodmo fitment filter: {vehicle}" if full else

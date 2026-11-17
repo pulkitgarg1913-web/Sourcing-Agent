@@ -37,10 +37,16 @@ from parts_agent.relevance import (
     CLOSE_MATCH,
     COMPONENT,
     EXACT_MATCH,
+    EXACT_PART_MATCH,
+    PART_ALIAS_MATCH,
+    RELATED_COMPONENT,
+    WRONG_PART_TYPE,
+    UNKNOWN,
     INCOMPATIBLE,
     IRRELEVANT,
     NEEDS_REVIEW,
     check_vehicle_compatibility,
+    check_part_family_compatibility,
     classify_listings,
     classify_product,
     rank_listings,
@@ -688,6 +694,231 @@ class TestBugFixesAndRegression(unittest.IsolatedAsyncioTestCase):
 
         # 3. Verify missing price was not treated as 0 (which would have placed it first)
         self.assertIsNone(ranked[3]["price"])
+
+    # -------------------------------------------------------------------------
+    # Scenario 7: Part-Family Validation - Tata Nexon Fuel Pump Rejection
+    # -------------------------------------------------------------------------
+
+    def test_part_family_tata_nexon_fuel_pump_rejection(self):
+        """Reject unrelated brackets, clamps, separators, and fuse boxes for fuel pump queries."""
+        query = "Tata Nexon 2023 1.2L Revotron fuel pump"
+        items = [
+            {"title": "Tata Separator", "price": 5.76, "brand": "Tata"},
+            {"title": "Tata Bracket", "price": 14.40, "brand": "Tata"},
+            {"title": "Tata Fuse Box Bracket", "price": 21.12, "brand": "Tata"},
+            {"title": "Tata Clamp Brackets", "price": 33.60, "brand": "Tata"},
+            {"title": "Tata Motors Genuine Fuel Pump Assembly", "price": 6500.0, "brand": "Tata"},
+            {"title": "Bosch Fuel Delivery Module", "price": 5200.0, "brand": "Bosch"},
+            {"title": "Fuel Pump Motor Core", "price": 1800.0, "brand": "Aftermarket"},
+            {"title": "Tata Genuine Fuel Pump Lock Ring", "price": 150.0, "brand": "Tata"},
+        ]
+
+        classified = classify_listings(
+            items,
+            query=query,
+            requested_part="fuel pump",
+            target_maker="Tata",
+            target_model="Nexon",
+        )
+        by_title = {l["title"]: l for l in classified}
+
+        # 1. Verify part family classifications
+        self.assertEqual(by_title["Tata Separator"]["part_family_classification"], WRONG_PART_TYPE)
+        self.assertEqual(by_title["Tata Separator"]["relevance"], WRONG_PART_TYPE)
+        self.assertEqual(by_title["Tata Separator"]["relevance_score"], 0.0)
+
+        self.assertEqual(by_title["Tata Bracket"]["part_family_classification"], WRONG_PART_TYPE)
+        self.assertEqual(by_title["Tata Bracket"]["relevance"], WRONG_PART_TYPE)
+
+        self.assertEqual(by_title["Tata Fuse Box Bracket"]["part_family_classification"], WRONG_PART_TYPE)
+        self.assertEqual(by_title["Tata Fuse Box Bracket"]["relevance"], WRONG_PART_TYPE)
+
+        self.assertEqual(by_title["Tata Clamp Brackets"]["part_family_classification"], WRONG_PART_TYPE)
+        self.assertEqual(by_title["Tata Clamp Brackets"]["relevance"], WRONG_PART_TYPE)
+
+        # 2. Legitimate parts must be accepted
+        self.assertEqual(by_title["Tata Motors Genuine Fuel Pump Assembly"]["part_family_classification"], EXACT_PART_MATCH)
+        self.assertEqual(by_title["Tata Motors Genuine Fuel Pump Assembly"]["relevance"], EXACT_MATCH)
+
+        self.assertEqual(by_title["Bosch Fuel Delivery Module"]["part_family_classification"], EXACT_PART_MATCH)
+        self.assertEqual(by_title["Bosch Fuel Delivery Module"]["relevance"], EXACT_MATCH)
+
+        self.assertEqual(by_title["Fuel Pump Motor Core"]["part_family_classification"], RELATED_COMPONENT)
+        self.assertEqual(by_title["Tata Genuine Fuel Pump Lock Ring"]["part_family_classification"], ACCESSORY)
+
+        # 3. Final ranked results MUST completely exclude all WRONG_PART_TYPE products
+        ranked = rank_listings(classified, price_order="asc")
+        ranked_titles = [l["title"] for l in ranked]
+
+        self.assertNotIn("Tata Separator", ranked_titles)
+        self.assertNotIn("Tata Bracket", ranked_titles)
+        self.assertNotIn("Tata Fuse Box Bracket", ranked_titles)
+        self.assertNotIn("Tata Clamp Brackets", ranked_titles)
+
+        # Exact assemblies come first, components second, accessories third
+        self.assertEqual(ranked_titles[0], "Bosch Fuel Delivery Module")  # 5200.0 (cheaper exact match)
+        self.assertEqual(ranked_titles[1], "Tata Motors Genuine Fuel Pump Assembly")  # 6500.0
+        self.assertEqual(ranked_titles[2], "Fuel Pump Motor Core")  # Component
+        self.assertEqual(ranked_titles[3], "Tata Genuine Fuel Pump Lock Ring")  # Accessory
+
+    # -------------------------------------------------------------------------
+    # Scenario 8: Part-Family Validation - Hyundai i20 Air Filter Rejection
+    # -------------------------------------------------------------------------
+
+    def test_part_family_hyundai_i20_air_filter_rejection(self):
+        """Reject packing caps, oil filler caps, and oil filters for air filter queries."""
+        query = "Hyundai i20 2021 1.2L Kappa air filter"
+        items = [
+            {"title": "Mobis Packing Cap", "price": 157.78, "brand": "Hyundai"},
+            {"title": "Mobis Oil Filler Cap", "price": 485.10, "brand": "Hyundai"},
+            {"title": "CAP-OIL FILLER", "price": 280.0, "brand": "Hyundai"},
+            {"title": "Mobis Air Filter Element", "price": 420.0, "brand": "Hyundai"},
+            {"title": "Mann-Filter Engine Air Filter C25016", "price": 550.0, "brand": "Mann-Filter"},
+            {"title": "Bosch Engine Oil Filter", "price": 250.0, "brand": "Bosch"},  # Conflicting filter
+        ]
+
+        classified = classify_listings(
+            items,
+            query=query,
+            requested_part="air filter",
+            target_maker="Hyundai",
+            target_model="i20",
+        )
+        by_title = {l["title"]: l for l in classified}
+
+        # 1. Unrelated caps and conflicting filters must be WRONG_PART_TYPE
+        self.assertEqual(by_title["Mobis Packing Cap"]["part_family_classification"], WRONG_PART_TYPE)
+        self.assertEqual(by_title["Mobis Packing Cap"]["relevance"], WRONG_PART_TYPE)
+
+        self.assertEqual(by_title["Mobis Oil Filler Cap"]["part_family_classification"], WRONG_PART_TYPE)
+        self.assertEqual(by_title["Mobis Oil Filler Cap"]["relevance"], WRONG_PART_TYPE)
+
+        self.assertEqual(by_title["CAP-OIL FILLER"]["part_family_classification"], WRONG_PART_TYPE)
+        self.assertEqual(by_title["CAP-OIL FILLER"]["relevance"], WRONG_PART_TYPE)
+
+        self.assertEqual(by_title["Bosch Engine Oil Filter"]["part_family_classification"], WRONG_PART_TYPE)
+        self.assertEqual(by_title["Bosch Engine Oil Filter"]["relevance"], WRONG_PART_TYPE)
+
+        # 2. Legitimate air filter items must match
+        self.assertIn(by_title["Mobis Air Filter Element"]["part_family_classification"], [EXACT_PART_MATCH, PART_ALIAS_MATCH])
+        self.assertEqual(by_title["Mobis Air Filter Element"]["relevance"], EXACT_MATCH)
+
+        self.assertIn(by_title["Mann-Filter Engine Air Filter C25016"]["part_family_classification"], [EXACT_PART_MATCH, PART_ALIAS_MATCH])
+        self.assertEqual(by_title["Mann-Filter Engine Air Filter C25016"]["relevance"], EXACT_MATCH)
+
+        # 3. Final ranked results MUST contain zero caps and zero oil filters
+        ranked = rank_listings(classified, price_order="asc")
+        ranked_titles = [l["title"] for l in ranked]
+
+        self.assertNotIn("Mobis Packing Cap", ranked_titles)
+        self.assertNotIn("Mobis Oil Filler Cap", ranked_titles)
+        self.assertNotIn("CAP-OIL FILLER", ranked_titles)
+        self.assertNotIn("Bosch Engine Oil Filter", ranked_titles)
+        self.assertEqual(len(ranked_titles), 2)
+
+    # -------------------------------------------------------------------------
+    # Scenario 9: Part-Family Validation - Tata Safari Oil Filter Matching
+    # -------------------------------------------------------------------------
+
+    def test_part_family_tata_safari_oil_filter(self):
+        """Accept valid Safari oil filters; reject contradictory vehicle and wrong part families."""
+        query = "Tata Safari 2022 2.0L Kryotec oil filter"
+        items = [
+            {"title": "Tata Genuine Oil Filter Element", "price": 450.0, "brand": "Tata"},
+            {"title": "Bosch Engine Oil Filter", "price": 380.0, "brand": "Bosch"},
+            {"title": "Audi OEM Oil Filter", "price": 2200.0, "brand": "Audi"},  # Incompatible vehicle
+            {"title": "Tata Safari Engine Mount Bracket", "price": 1100.0, "brand": "Tata"},  # Wrong part
+            {"title": "Tata Safari Engine Air Filter Element", "price": 750.0, "brand": "Tata"},  # Conflicting filter
+            {"title": "Safari Oil Filter Drain Gasket", "price": 25.0, "brand": "Tata"},  # Genuine accessory
+        ]
+
+        classified = classify_listings(
+            items,
+            query=query,
+            requested_part="oil filter",
+            target_maker="Tata",
+            target_model="Safari",
+        )
+        by_title = {l["title"]: l for l in classified}
+
+        # Audi item rejected by vehicle gate (INCOMPATIBLE)
+        self.assertEqual(by_title["Audi OEM Oil Filter"]["relevance"], INCOMPATIBLE)
+
+        # Engine mount bracket and Air filter rejected by part-family gate (WRONG_PART_TYPE)
+        self.assertEqual(by_title["Tata Safari Engine Mount Bracket"]["part_family_classification"], WRONG_PART_TYPE)
+        self.assertEqual(by_title["Tata Safari Engine Mount Bracket"]["relevance"], WRONG_PART_TYPE)
+
+        self.assertEqual(by_title["Tata Safari Engine Air Filter Element"]["part_family_classification"], WRONG_PART_TYPE)
+        self.assertEqual(by_title["Tata Safari Engine Air Filter Element"]["relevance"], WRONG_PART_TYPE)
+
+        # Valid oil filters accepted
+        self.assertEqual(by_title["Tata Genuine Oil Filter Element"]["relevance"], EXACT_MATCH)
+        self.assertEqual(by_title["Bosch Engine Oil Filter"]["relevance"], EXACT_MATCH)
+        self.assertEqual(by_title["Safari Oil Filter Drain Gasket"]["relevance"], ACCESSORY)
+
+        # Final ranked output check
+        ranked = rank_listings(classified, price_order="asc")
+        ranked_titles = [l["title"] for l in ranked]
+
+        self.assertNotIn("Audi OEM Oil Filter", ranked_titles)
+        self.assertNotIn("Tata Safari Engine Mount Bracket", ranked_titles)
+        self.assertNotIn("Tata Safari Engine Air Filter Element", ranked_titles)
+
+        self.assertEqual(ranked_titles[0], "Bosch Engine Oil Filter")  # 380.0
+        self.assertEqual(ranked_titles[1], "Tata Genuine Oil Filter Element")  # 450.0
+        self.assertEqual(ranked_titles[2], "Safari Oil Filter Drain Gasket")  # 25.0 (accessory tier)
+
+    # -------------------------------------------------------------------------
+    # Scenario 10: Part-Family Validation - Maruti Swift Brake Pad Rejection
+    # -------------------------------------------------------------------------
+
+    def test_part_family_maruti_swift_brake_pad(self):
+        """Accept brake pads; reject brake discs, drums, and calipers when pads were requested."""
+        query = "Maruti Swift 2020 1.2L VXI brake pad"
+        items = [
+            {"title": "Maruti Genuine Front Brake Pad Set", "price": 1450.0, "brand": "Maruti Suzuki"},
+            {"title": "Brembo Disc Brake Pads Front", "price": 1800.0, "brand": "Brembo"},
+            {"title": "Maruti Genuine Front Brake Disc Rotor", "price": 1100.0, "brand": "Maruti Suzuki"},
+            {"title": "Maruti Genuine Rear Brake Drum", "price": 950.0, "brand": "Maruti Suzuki"},
+            {"title": "Brake Caliper Assembly Left", "price": 3200.0, "brand": "Aftermarket"},
+            {"title": "Swift Brake Pad Retaining Clip Set", "price": 120.0, "brand": "Maruti Suzuki"},
+        ]
+
+        classified = classify_listings(
+            items,
+            query=query,
+            requested_part="brake pad",
+            target_maker="Maruti",
+            target_model="Swift",
+        )
+        by_title = {l["title"]: l for l in classified}
+
+        # Brake disc, drum, caliper must be WRONG_PART_TYPE
+        self.assertEqual(by_title["Maruti Genuine Front Brake Disc Rotor"]["part_family_classification"], WRONG_PART_TYPE)
+        self.assertEqual(by_title["Maruti Genuine Front Brake Disc Rotor"]["relevance"], WRONG_PART_TYPE)
+
+        self.assertEqual(by_title["Maruti Genuine Rear Brake Drum"]["part_family_classification"], WRONG_PART_TYPE)
+        self.assertEqual(by_title["Maruti Genuine Rear Brake Drum"]["relevance"], WRONG_PART_TYPE)
+
+        self.assertEqual(by_title["Brake Caliper Assembly Left"]["part_family_classification"], WRONG_PART_TYPE)
+        self.assertEqual(by_title["Brake Caliper Assembly Left"]["relevance"], WRONG_PART_TYPE)
+
+        # Pads must be EXACT_MATCH
+        self.assertEqual(by_title["Maruti Genuine Front Brake Pad Set"]["relevance"], EXACT_MATCH)
+        self.assertEqual(by_title["Brembo Disc Brake Pads Front"]["relevance"], EXACT_MATCH)
+        self.assertEqual(by_title["Swift Brake Pad Retaining Clip Set"]["relevance"], ACCESSORY)
+
+        # Final ranked output check
+        ranked = rank_listings(classified, price_order="asc")
+        ranked_titles = [l["title"] for l in ranked]
+
+        self.assertNotIn("Maruti Genuine Front Brake Disc Rotor", ranked_titles)
+        self.assertNotIn("Maruti Genuine Rear Brake Drum", ranked_titles)
+        self.assertNotIn("Brake Caliper Assembly Left", ranked_titles)
+
+        self.assertEqual(ranked_titles[0], "Maruti Genuine Front Brake Pad Set")  # 1450.0
+        self.assertEqual(ranked_titles[1], "Brembo Disc Brake Pads Front")  # 1800.0
+        self.assertEqual(ranked_titles[2], "Swift Brake Pad Retaining Clip Set")  # 120.0 (accessory)
 
 
 if __name__ == "__main__":

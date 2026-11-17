@@ -21,15 +21,27 @@ ACCESSORY = "ACCESSORY"
 NEEDS_REVIEW = "NEEDS_REVIEW"
 INCOMPATIBLE = "INCOMPATIBLE"
 IRRELEVANT = "IRRELEVANT"
+WRONG_PART_TYPE = "WRONG_PART_TYPE"
+
+# Part-Family Specific Classifications
+EXACT_PART_MATCH = "EXACT_PART_MATCH"
+PART_ALIAS_MATCH = "PART_ALIAS_MATCH"
+RELATED_COMPONENT = "RELATED_COMPONENT"
+UNKNOWN = "UNKNOWN"
 
 RELEVANCE_TIERS = {
+    EXACT_PART_MATCH: 1,
     EXACT_MATCH: 1,
+    PART_ALIAS_MATCH: 2,
     CLOSE_MATCH: 2,
+    RELATED_COMPONENT: 3,
     COMPONENT: 3,
     ACCESSORY: 4,
     NEEDS_REVIEW: 5,
+    UNKNOWN: 5,
     INCOMPATIBLE: 6,
-    IRRELEVANT: 7,
+    WRONG_PART_TYPE: 7,
+    IRRELEVANT: 8,
 }
 
 # Known automotive vehicle manufacturers and their common aliases
@@ -284,6 +296,17 @@ def parse_query_intent(query: str, requested_part: str = "") -> Dict[str, Any]:
             specified_component = comp
             break
 
+    # Domain adjustments for requested intent:
+    # In fuel pump context, "pump" is the primary assembly requested, NOT a sub-component.
+    if any(p in target_clean for p in ("fuel pump", "petrol pump", "diesel pump", "hpfp", "feed pump")):
+        if specified_component in ("pump",):
+            specified_component = None
+
+    # In brake pad context, "pad" is the primary assembly requested, NOT a sub-component.
+    if any(p in target_clean for p in ("brake pad", "disc pad", "brake pads", "disc pads")):
+        if specified_component in ("pad", "pads"):
+            specified_component = None
+
     # Determine desired product type
     if specified_accessory:
         desired_type = "accessory"
@@ -309,6 +332,332 @@ def parse_query_intent(query: str, requested_part: str = "") -> Dict[str, Any]:
         "inferred_maker": inferred_maker,
         "inferred_model": inferred_model,
     }
+
+
+# Comprehensive Automotive Part Family Definitions
+PART_FAMILY_DEFINITIONS: Dict[str, Dict[str, Any]] = {
+    "fuel_pump": {
+        "name": "fuel pump",
+        "match_queries": (
+            "fuel pump", "fuel delivery pump", "fuel feed pump", "petrol pump",
+            "diesel pump", "fuel module", "fuel sender", "high pressure fuel pump",
+            "hpfp", "feed pump", "fuel delivery module", "fuel sending unit",
+        ),
+        "family_keywords": ("fuel", "pump", "hpfp", "sender"),
+        "exact_patterns": (
+            r"\b(fuel\s+pump|fuel\s+delivery\s+(?:module|unit)|petrol\s+pump|diesel\s+pump|hpfp|fuel\s+feed\s+pump|feed\s+pump|high\s+pressure\s+(?:fuel\s+)?pump)\b",
+        ),
+        "alias_patterns": (
+            r"\b(fuel\s+(?:sender|sending\s+unit|pump\s+module|sub\s*assy\s+fuel\s+pump)|module\s+assy\s+fuel)\b",
+        ),
+        "related_component_patterns": (
+            r"\b(fuel\s+pump\s+(?:motor|core)|pump\s+motor|fuel\s+level\s+sensor|fuel\s+gauge\s+sensor|float\s+fuel\s+pump|fuel\s+strainer|fuel\s+pump\s+filter)\b",
+        ),
+        "accessory_patterns": (
+            r"\b(fuel\s+pump\s+.*?(?:bracket|clamp|seal|gasket|o-ring|oring|relay|harness|connector|wiring|retainer|lock\s*ring|lockring|mounting))\b",
+        ),
+        "conflicting_patterns": (
+            r"\b(separator|fuse\s*box|oil\s+filler|filler\s+cap|oil\s+filter|air\s+filter|cabin\s+filter|brake|spark\s*plug|clutch|bumper|headlight|wiper|strut|shock|radiator|intercooler|exhaust|muffler|silencer|fuel\s+tank\b(?!.*pump)|fuel\s+pipe\b(?!.*pump)|fuel\s+hose\b(?!.*pump)|fuel\s+line\b(?!.*pump)|fuel\s+rail\b(?!.*pump)|fuel\s+filter\b(?!.*pump)|injector\b(?!.*pump)|bracket\b(?!.*fuel\s*pump)|clamp\b(?!.*fuel\s*pump)|cap\b(?!.*fuel\s*pump)|packing\b(?!.*fuel\s*pump))\b",
+        ),
+    },
+    "air_filter": {
+        "name": "air filter",
+        "match_queries": (
+            "air filter", "engine air filter", "air cleaner", "air cleaner element",
+            "filter air", "air intake filter",
+        ),
+        "family_keywords": ("air", "filter", "cleaner"),
+        "exact_patterns": (
+            r"\b(air\s+filter|air\s+cleaner\s+element|filter\s+element\s+air|engine\s+air\s+filter|filter\s+air\s+cleaner|element\s+air\s+cleaner)\b",
+        ),
+        "alias_patterns": (
+            r"\b(air\s+cleaner|filter\s+assy\s+air|filter\s+sub\s*assy\s+air|air\s+filter\s+insert|air\s+intake\s+filter)\b",
+        ),
+        "related_component_patterns": (
+            r"\b(air\s+filter\s+box|air\s+cleaner\s+case|air\s+box|air\s+duct|intake\s+hose)\b",
+        ),
+        "accessory_patterns": (
+            r"\b(air\s+filter\s+(?:clamp|clip|bracket|seal|gasket))\b",
+        ),
+        "conflicting_patterns": (
+            r"\b(oil\s+filler|packing\s+cap|oil\s+cap|oil\s+filter|fuel\s+filter|cabin\s+filter|ac\s+filter|pollen\s+filter|spark\s*plug|brake|clutch|separator|fuse\s*box|bumper|headlight|wiper|shock|fuel\s+pump|cap\b(?!.*air\s*(?:filter|cleaner))|bracket\b(?!.*air\s*(?:filter|cleaner))|clamp\b(?!.*air\s*(?:filter|cleaner))|cover\b(?!.*air\s*(?:filter|cleaner))|hose\b(?!.*air\s*(?:filter|cleaner))|packing\b(?!.*air\s*(?:filter|cleaner)))\b",
+        ),
+    },
+    "oil_filter": {
+        "name": "oil filter",
+        "match_queries": (
+            "oil filter", "engine oil filter", "lube filter", "lube oil filter",
+            "oil filter element", "filter oil", "oil cartridge",
+        ),
+        "family_keywords": ("oil", "filter", "lube"),
+        "exact_patterns": (
+            r"\b(oil\s+filter|engine\s+oil\s+filter|lube\s+filter|lube\s+oil\s+filter|oil\s+filter\s+element|filter\s+cartridge\s+oil|filter\s+oil|filter\s+element\s+oil)\b",
+        ),
+        "alias_patterns": (
+            r"\b(filter\s+assy\s+oil|filter\s+sub\s*assy\s+oil|spin-on\s+oil\s+filter)\b",
+        ),
+        "related_component_patterns": (
+            r"\b(oil\s+filter\s+housing|oil\s+filter\s+cap|oil\s+cooler|oil\s+filter\s+bracket|filter\s+head)\b",
+        ),
+        "accessory_patterns": (
+            r"\b(oil\s+filter\s+.*?(?:gasket|o-ring|oring|seal|washer|drain\s+plug|drain\s+gasket))\b",
+        ),
+        "conflicting_patterns": (
+            r"\b(air\s+filter|cabin\s+filter|fuel\s+filter|fuel\s+pump|brake|spark\s*plug|clutch|oil\s+filler\s+cap|oil\s+pan|oil\s+sump|oil\s+pump\b(?!.*filter)|dipstick|separator|fuse\s*box|bracket\b(?!.*oil\s*filter)|clamp\b(?!.*oil\s*filter)|cap\b(?!.*oil\s*filter)|packing\b(?!.*oil\s*filter))\b",
+        ),
+    },
+    "brake_pad": {
+        "name": "brake pad",
+        "match_queries": (
+            "brake pad", "brake pads", "disc brake pad", "front brake pad",
+            "rear brake pad", "brake pad set", "disc pad", "front pad set", "rear pad set",
+        ),
+        "family_keywords": ("pad", "pads"),
+        "exact_patterns": (
+            r"\b(brake\s+pads?|disc\s+pads?|disc\s+brake\s+pads?|pad\s+set\s+(?:disc\s+)?brake|brake\s+pad\s+set|pads?,\s*brake)\b",
+        ),
+        "alias_patterns": (
+            r"\b(front\s+pad\s+set|rear\s+pad\s+set|brake\s+lining\s+pad|friction\s+pads?|pad\s+kit\s+disc\s+brake)\b",
+        ),
+        "related_component_patterns": (
+            r"\b(brake\s+pad\s+wear\s+sensor|brake\s+wear\s+indicator|pad\s+sensor)\b",
+        ),
+        "accessory_patterns": (
+            r"\b(brake\s+pad\s+.*?(?:clip|shim|pin|spring|retaining\s+clip|hardware\s+kit))\b",
+        ),
+        "conflicting_patterns": (
+            r"\b(brake\s+disc|brake\s+rotor|disc\s+rotor|brake\s+drum|brake\s+shoe|brake\s+caliper|caliper\s+assy|caliper\s+bracket|brake\s+booster|master\s+cylinder|brake\s+hose|brake\s+pipe|brake\s+fluid|handbrake\s+cable|abs\s+sensor|clutch|oil\s+filter|air\s+filter|fuel\s+pump|spark\s*plug)\b",
+        ),
+    },
+    "spark_plug": {
+        "name": "spark plug",
+        "match_queries": ("spark plug", "spark plugs", "sparkplug", "glow plug"),
+        "family_keywords": ("plug", "plugs"),
+        "exact_patterns": (
+            r"\b(spark\s*plugs?|iridium\s+(?:spark\s*)?plugs?|platinum\s+(?:spark\s*)?plugs?|glow\s*plugs?)\b",
+        ),
+        "alias_patterns": (
+            r"\b(ignition\s+plugs?)\b",
+        ),
+        "related_component_patterns": (
+            r"\b(spark\s*plug\s+(?:wire|cable|boot|lead))\b",
+        ),
+        "accessory_patterns": (
+            r"\b(spark\s*plug\s+(?:gap|gasket|seal|tool))\b",
+        ),
+        "conflicting_patterns": (
+            r"\b(ignition\s+coil|coil\s+pack|distributor|plug\s+cap\b(?!.*spark\s*plug)|oil\s+drain\s+plug|drain\s+plug|air\s+filter|oil\s+filter|fuel\s+pump|brake|clutch)\b",
+        ),
+    },
+    "cabin_filter": {
+        "name": "cabin filter",
+        "match_queries": ("cabin filter", "cabin air filter", "ac filter", "pollen filter"),
+        "family_keywords": ("cabin", "ac", "pollen"),
+        "exact_patterns": (
+            r"\b(cabin\s+filter|cabin\s+air\s+filter|pollen\s+filter|ac\s+filter|a/c\s+filter)\b",
+        ),
+        "conflicting_patterns": (
+            r"\b(engine\s+air\s+filter|oil\s+filter|fuel\s+filter|fuel\s+pump|brake|spark\s*plug)\b",
+        ),
+    },
+    "clutch_plate": {
+        "name": "clutch plate",
+        "match_queries": ("clutch plate", "clutch disc", "clutch set", "clutch kit", "clutch assembly", "clutch"),
+        "family_keywords": ("clutch",),
+        "exact_patterns": (
+            r"\b(clutch\s+plate|clutch\s+disc|disc\s+assy\s*clutch|clutch\s+set|clutch\s+kit|clutch\s+assy|friction\s+plate|cover\s+assy\s*clutch|clutch\s+cover|pressure\s+plate)\b",
+        ),
+        "conflicting_patterns": (
+            r"\b(brake|oil\s+filter|air\s+filter|fuel\s+pump|spark\s*plug)\b",
+        ),
+    },
+    "headlight": {
+        "name": "headlight",
+        "match_queries": ("headlight", "head lamp", "head light", "headlamp"),
+        "family_keywords": ("headlight", "headlamp", "front light"),
+        "exact_patterns": (
+            r"\b(head\s*lights?|head\s*lamps?|front\s+light)\b",
+        ),
+        "conflicting_patterns": (
+            r"\b(tail\s*light|tail\s*lamp|fog\s*light|fog\s*lamp|indicator|mirror|bumper|brake|oil\s+filter|air\s+filter|fuel\s+pump)\b",
+        ),
+    },
+    "taillight": {
+        "name": "taillight",
+        "match_queries": ("taillight", "tail light", "tail lamp", "taillamp", "rear light", "rear lamp"),
+        "family_keywords": ("taillight", "taillamp", "rear light"),
+        "exact_patterns": (
+            r"\b(tail\s*lights?|tail\s*lamps?|rear\s+combination\s+lamp)\b",
+        ),
+        "conflicting_patterns": (
+            r"\b(head\s*light|head\s*lamp|fog\s*lamp|fog\s*light|bumper|mirror|brake|oil\s+filter|air\s+filter|fuel\s+pump)\b",
+        ),
+    },
+    "wiper_blade": {
+        "name": "wiper blade",
+        "match_queries": ("wiper blade", "wiper blades", "windshield wiper", "wiper"),
+        "family_keywords": ("wiper",),
+        "exact_patterns": (
+            r"\b(wiper\s+blades?|windshield\s+wiper|wiper\s+blade\s+set)\b",
+        ),
+        "conflicting_patterns": (
+            r"\b(wiper\s+motor|wiper\s+linkage|wiper\s+arm\b(?!.*blade)|washer\s+pump|washer\s+nozzle|headlight|brake|oil\s+filter)\b",
+        ),
+    },
+    "shock_absorber": {
+        "name": "shock absorber",
+        "match_queries": ("shock absorber", "strut", "damper", "shocker"),
+        "family_keywords": ("shock", "strut", "damper"),
+        "exact_patterns": (
+            r"\b(shock\s+absorbers?|struts?|front\s+shock|rear\s+shock|damper)\b",
+        ),
+        "conflicting_patterns": (
+            r"\b(spring\b(?!.*shock)|coil\s+spring|strut\s+mount\b(?!.*strut\s+assembly)|bump\s+stop|control\s+arm|tie\s+rod|brake|oil\s+filter)\b",
+        ),
+    },
+    "sunroof": {
+        "name": "sunroof",
+        "match_queries": ("sunroof", "panorama roof", "panoramic roof", "moonroof", "sun roof"),
+        "family_keywords": ("roof", "sunroof", "panorama", "panoramic"),
+        "exact_patterns": (
+            r"\b(sunroof|panorama\s*roof|panoramic\s*roof|moonroof|sun\s*roof)\b",
+        ),
+        "related_component_patterns": (
+            r"\b(glass|mechanism|frame|motor|roller\s+blind|slide\s+shoe)\b",
+        ),
+        "accessory_patterns": (
+            r"\b(drain\s+hose|grommet|drain\s+pipe)\b",
+        ),
+        "conflicting_patterns": (
+            r"\b(oil\s+filter|air\s+filter|fuel\s+pump|brake|clutch|spark\s*plug)\b",
+        ),
+    },
+}
+
+
+def check_part_family_compatibility(
+    product_title: str,
+    requested_part: str = "",
+    query: str = "",
+    category: str = "",
+) -> Tuple[str, str]:
+    """Validate that the product belongs to the requested automotive part family.
+
+    Returns:
+        (classification, reason) where classification is one of:
+        - EXACT_PART_MATCH: Direct, primary match for the requested part.
+        - PART_ALIAS_MATCH: Acceptable automotive synonym or alias.
+        - RELATED_COMPONENT: Legitimate sub-component of the requested part assembly.
+        - ACCESSORY: Genuine accessory/mounting hardware of the requested part.
+        - WRONG_PART_TYPE: Unrelated, conflicting, or non-matching part family.
+        - UNKNOWN: Ambiguous or unclassifiable product.
+    """
+    title_clean = _clean_text(product_title)
+    if not title_clean:
+        return (UNKNOWN, "Empty product title.")
+
+    # Infer intent and requested targets
+    intent = parse_query_intent(query, requested_part)
+    target_clean = intent.get("target_clean") or _clean_text(requested_part or query or category)
+    desired_type = intent.get("desired_type", "complete_assembly")
+    spec_acc = intent.get("specified_accessory")
+    spec_comp = intent.get("specified_component")
+
+    # If customer explicitly asked for an accessory (e.g. "sunroof drain hose")
+    if desired_type == "accessory" and spec_acc:
+        if re.search(rf"\b{re.escape(spec_acc)}\b", title_clean):
+            return (EXACT_PART_MATCH, f"Exact match for requested accessory: '{spec_acc}'.")
+
+    # If customer explicitly asked for a component (e.g. "sunroof glass")
+    if desired_type == "component" and spec_comp:
+        if re.search(rf"\b{re.escape(spec_comp)}\b", title_clean):
+            return (EXACT_PART_MATCH, f"Exact match for requested component: '{spec_comp}'.")
+
+    # Detect matching family definition
+    matched_family_id = None
+    matched_family = None
+
+    # Check query/requested_part against match_queries
+    text_to_match = f"{target_clean} {_clean_text(requested_part)} {_clean_text(query)}".lower()
+    for fam_id, fam_def in PART_FAMILY_DEFINITIONS.items():
+        # Sort queries by length descending
+        for mq in sorted(fam_def.get("match_queries", ()), key=lambda x: -len(x)):
+            if re.search(rf"\b{re.escape(mq)}\b", text_to_match):
+                matched_family_id = fam_id
+                matched_family = fam_def
+                break
+        if matched_family:
+            break
+
+    if not matched_family and intent.get("product_family") in PART_FAMILY_DEFINITIONS:
+        matched_family_id = intent["product_family"]
+        matched_family = PART_FAMILY_DEFINITIONS[matched_family_id]
+
+    if matched_family:
+        fam_name = matched_family["name"]
+
+        # 1. Check positive patterns
+        # Accessories
+        for pat in matched_family.get("accessory_patterns", ()):
+            if re.search(pat, title_clean):
+                return (ACCESSORY, f"Genuine accessory/hardware for {fam_name}: '{product_title}'.")
+
+        # Related sub-components
+        for pat in matched_family.get("related_component_patterns", ()):
+            if re.search(pat, title_clean):
+                return (RELATED_COMPONENT, f"Related sub-component of {fam_name}: '{product_title}'.")
+
+        # Exact match
+        for pat in matched_family.get("exact_patterns", ()):
+            if re.search(pat, title_clean):
+                return (EXACT_PART_MATCH, f"Exact part match for {fam_name}: '{product_title}'.")
+
+        # Alias match
+        for pat in matched_family.get("alias_patterns", ()):
+            if re.search(pat, title_clean):
+                return (PART_ALIAS_MATCH, f"Part alias match for {fam_name}: '{product_title}'.")
+
+        # 2. Check conflicting patterns
+        for pat in matched_family.get("conflicting_patterns", ()):
+            if re.search(pat, title_clean):
+                return (
+                    WRONG_PART_TYPE,
+                    f"Conflicting part type: product is '{product_title}', but requested part family is '{fam_name}'."
+                )
+
+        # 3. Check family keywords presence
+        keywords = matched_family.get("family_keywords", ())
+        if keywords and not any(re.search(rf"\b{re.escape(kw)}\b", title_clean) for kw in keywords):
+            return (
+                WRONG_PART_TYPE,
+                f"Unrelated part type: product '{product_title}' does not contain required {fam_name} keywords."
+            )
+
+        # If some keywords were present
+        return (RELATED_COMPONENT, f"Related component in {fam_name} system: '{product_title}'.")
+
+    # Fallback when requested part is not in predefined dictionary
+    stopwords = {
+        "find", "need", "looking", "for", "a", "an", "the", "car", "vehicle", "automobile",
+        "spare", "part", "parts", "genuine", "oem", "chahiye", "ka", "ki", "ke", "hai",
+    }
+    target_words = [w for w in target_clean.split() if w not in stopwords and len(w) > 2]
+    if not target_words:
+        return (UNKNOWN, f"Ambiguous requested part: '{target_clean}'.")
+
+    has_any = any(re.search(rf"\b{re.escape(w)}\b", title_clean) for w in target_words)
+    has_all = all(re.search(rf"\b{re.escape(w)}\b", title_clean) for w in target_words)
+
+    if not has_any:
+        # Check if product is generic hardware or component
+        if any(re.search(rf"\b{re.escape(t)}\b", title_clean) for t in ACCESSORY_TERMS | COMPONENT_TERMS | {"separator"}):
+            return (WRONG_PART_TYPE, f"Unrelated part: '{product_title}' does not match requested '{target_clean}'.")
+        return (WRONG_PART_TYPE, f"Unrelated part: '{product_title}' does not match requested '{target_clean}'.")
+
+    if has_all:
+        return (EXACT_PART_MATCH, f"Matches requested part '{target_clean}': '{product_title}'.")
+
+    return (PART_ALIAS_MATCH, f"Partial match for requested part '{target_clean}': '{product_title}'.")
 
 
 def classify_product(
@@ -349,6 +698,8 @@ def classify_product(
             "relevance_score": 0.0,
             "relevance_reason": f"Website navigation or policy link ('{product_title}'), not an automotive part.",
             "product_type": "irrelevant",
+            "part_family_classification": WRONG_PART_TYPE,
+            "part_family_reason": "Website navigation or policy link.",
         }
 
     # 0b. Vehicle Brand & Model Compatibility Validation
@@ -367,7 +718,27 @@ def classify_product(
                 "relevance_score": 0.0,
                 "relevance_reason": compat_reason,
                 "product_type": "incompatible",
+                "part_family_classification": WRONG_PART_TYPE,
+                "part_family_reason": compat_reason,
             }
+
+    # 0c. Strict Part-Family Compatibility Validation
+    target_part_str = requested_part or intent.get("target_raw") or query or ""
+    part_classification, part_reason = check_part_family_compatibility(
+        product_title=product_title,
+        requested_part=target_part_str,
+        query=query,
+        category=category,
+    )
+    if part_classification == WRONG_PART_TYPE:
+        return {
+            "relevance": WRONG_PART_TYPE,
+            "relevance_score": 0.0,
+            "relevance_reason": part_reason,
+            "product_type": "wrong_part_type",
+            "part_family_classification": WRONG_PART_TYPE,
+            "part_family_reason": part_reason,
+        }
 
     # 1. Detect if the product itself is an accessory or hardware item
     detected_accessory = None
@@ -423,19 +794,25 @@ def classify_product(
                 "relevance_score": 0.96,
                 "relevance_reason": f"Exact match for requested accessory: '{spec_acc}'.",
                 "product_type": "accessory",
+                "part_family_classification": EXACT_PART_MATCH,
+                "part_family_reason": part_reason,
             }
-        if detected_accessory:
+        if detected_accessory or part_classification == ACCESSORY:
             return {
                 "relevance": CLOSE_MATCH,
                 "relevance_score": 0.85,
-                "relevance_reason": f"Related accessory ({detected_accessory}) in the requested category.",
+                "relevance_reason": f"Related accessory ({detected_accessory or 'hardware'}) in the requested category.",
                 "product_type": "accessory",
+                "part_family_classification": ACCESSORY,
+                "part_family_reason": part_reason,
             }
         return {
             "relevance": COMPONENT,
             "relevance_score": 0.70,
             "relevance_reason": "Complete assembly/component returned for specific accessory query.",
             "product_type": item_product_type,
+            "part_family_classification": part_classification,
+            "part_family_reason": part_reason,
         }
 
     # -------------------------------------------------------------
@@ -451,53 +828,93 @@ def classify_product(
                 "relevance_score": 0.98,
                 "relevance_reason": f"Exact match for requested component: '{spec_comp}'.",
                 "product_type": "component",
+                "part_family_classification": EXACT_PART_MATCH,
+                "part_family_reason": part_reason,
             }
-        if detected_component:
+        if detected_component or part_classification == RELATED_COMPONENT:
             return {
                 "relevance": CLOSE_MATCH,
                 "relevance_score": 0.82,
-                "relevance_reason": f"Alternative component ({detected_component}) in the requested assembly.",
+                "relevance_reason": f"Alternative component ({detected_component or 'sub-assembly'}) in the requested assembly.",
                 "product_type": "component",
+                "part_family_classification": RELATED_COMPONENT,
+                "part_family_reason": part_reason,
             }
-        if detected_accessory:
+        if detected_accessory or part_classification == ACCESSORY:
             return {
                 "relevance": ACCESSORY,
                 "relevance_score": 0.75,
-                "relevance_reason": f"Minor hardware/accessory ({detected_accessory}) related to component.",
+                "relevance_reason": f"Minor hardware/accessory ({detected_accessory or 'hardware'}) related to component.",
                 "product_type": "accessory",
+                "part_family_classification": ACCESSORY,
+                "part_family_reason": part_reason,
             }
         return {
             "relevance": COMPONENT,
             "relevance_score": 0.75,
             "relevance_reason": "Broader assembly returned for specific component query.",
             "product_type": item_product_type,
+            "part_family_classification": part_classification,
+            "part_family_reason": part_reason,
         }
 
     # -------------------------------------------------------------
     # CASE 3: Customer requested a GENERIC / COMPLETE ASSEMBLY
     # (e.g. "Sunroof", "Headlight", "Bumper", "Oil Filter")
     # -------------------------------------------------------------
-    # If the product is an accessory/hardware piece:
-    if detected_accessory and detected_accessory not in target_clean:
+    # 1. Accessory matches (genuine accessory of the assembly)
+    if part_classification == ACCESSORY or (
+        detected_accessory
+        and detected_accessory not in target_clean
+        and part_classification not in (EXACT_PART_MATCH, PART_ALIAS_MATCH)
+    ):
         return {
             "relevance": ACCESSORY,
             "relevance_score": 0.95,
-            "relevance_reason": f"Component/accessory ({detected_accessory}) of the requested {family}, not a complete assembly.",
+            "relevance_reason": f"Component/accessory ({detected_accessory or 'hardware'}) of the requested {family}, not a complete assembly.",
             "product_type": "accessory",
+            "part_family_classification": ACCESSORY,
+            "part_family_reason": part_reason,
         }
 
-    # If the product contains an individual sub-component (e.g. glass, mechanism, frame, motor):
-    # (Skip if the product is explicitly a complete kit or set representing the family, e.g. "Clutch Kit (Disc+Pressure Plate)")
+    # 2. Exact part matches
+    if part_classification == EXACT_PART_MATCH:
+        return {
+            "relevance": EXACT_MATCH,
+            "relevance_score": 0.98,
+            "relevance_reason": f"Direct complete assembly match for requested '{target_clean or family}'.",
+            "product_type": "complete_assembly",
+            "part_family_classification": EXACT_PART_MATCH,
+            "part_family_reason": part_reason,
+        }
+
+    # 3. Part alias matches
+    if part_classification == PART_ALIAS_MATCH:
+        return {
+            "relevance": CLOSE_MATCH,
+            "relevance_score": 0.90,
+            "relevance_reason": f"Part alias match for requested '{target_clean or family}'.",
+            "product_type": "complete_assembly",
+            "part_family_classification": PART_ALIAS_MATCH,
+            "part_family_reason": part_reason,
+        }
+
+    # 4. Related sub-components
     if (
-        detected_component
-        and detected_component not in target_clean
-        and not (is_complete_assembly and any(k in title_norm for k in ("kit", "set", "complete kit", "complete set")))
+        part_classification == RELATED_COMPONENT
+        or (
+            detected_component
+            and detected_component not in target_clean
+            and not (is_complete_assembly and any(k in title_norm for k in ("kit", "set", "complete kit", "complete set")))
+        )
     ):
         return {
             "relevance": COMPONENT,
             "relevance_score": 0.92,
-            "relevance_reason": f"Sub-assembly component ({detected_component}) of the {family}, not a complete replacement assembly.",
+            "relevance_reason": f"Sub-assembly component ({detected_component or 'component'}) of the {family}, not a complete replacement assembly.",
             "product_type": "component",
+            "part_family_classification": RELATED_COMPONENT,
+            "part_family_reason": part_reason,
         }
 
     # Check if the product represents the primary complete assembly
@@ -512,12 +929,16 @@ def classify_product(
                 "relevance_score": 0.97,
                 "relevance_reason": f"Direct complete assembly match for requested '{target_clean or family}'.",
                 "product_type": "complete_assembly",
+                "part_family_classification": EXACT_PART_MATCH,
+                "part_family_reason": f"Matched synonym family '{family}'.",
             }
         return {
             "relevance": CLOSE_MATCH,
             "relevance_score": 0.88,
             "relevance_reason": f"Close match for requested '{target_clean or family}'.",
             "product_type": "complete_assembly",
+            "part_family_classification": PART_ALIAS_MATCH,
+            "part_family_reason": f"Matched synonym family '{family}'.",
         }
 
     # Check if title at least contains tokens of the target
@@ -529,6 +950,8 @@ def classify_product(
             "relevance_score": 0.85,
             "relevance_reason": f"Matches query terms: '{target_clean}'.",
             "product_type": item_product_type,
+            "part_family_classification": PART_ALIAS_MATCH,
+            "part_family_reason": "Matches all query tokens.",
         }
 
     # If it is in the category but missing direct title matches
@@ -539,12 +962,16 @@ def classify_product(
                 "relevance_score": 0.80,
                 "relevance_reason": f"Listed under {category} category as a component.",
                 "product_type": "component",
+                "part_family_classification": RELATED_COMPONENT,
+                "part_family_reason": f"Category component match for {category}.",
             }
         return {
             "relevance": NEEDS_REVIEW,
             "relevance_score": 0.65,
             "relevance_reason": f"Listed under {category} category but specific product intent is unverified.",
             "product_type": item_product_type,
+            "part_family_classification": UNKNOWN,
+            "part_family_reason": "Category match without direct title confirmation.",
         }
 
     # Default fallback
@@ -553,6 +980,8 @@ def classify_product(
         "relevance_score": 0.50,
         "relevance_reason": "Product title does not conclusively match requested product intent.",
         "product_type": item_product_type,
+        "part_family_classification": UNKNOWN,
+        "part_family_reason": "Ambiguous product intent.",
     }
 
 
@@ -594,13 +1023,18 @@ def classify_listings(
         d["relevance_score"] = res["relevance_score"]
         d["relevance_reason"] = res["relevance_reason"]
         d["product_type"] = res["product_type"]
+        d["part_family_classification"] = res.get("part_family_classification", UNKNOWN)
+        d["part_family_reason"] = res.get("part_family_reason", "")
 
         if res["relevance"] == INCOMPATIBLE:
             d["fitment"] = "incompatible"
             d["match"] = "incompatible"
+        elif res["relevance"] == WRONG_PART_TYPE or res.get("part_family_classification") == WRONG_PART_TYPE:
+            d["fitment"] = "wrong_part_type"
+            d["match"] = "wrong_part_type"
         else:
             # Keep legacy match field aligned
-            d["match"] = "exact" if res["relevance"] in (EXACT_MATCH, CLOSE_MATCH) else "related"
+            d["match"] = "exact" if res["relevance"] in (EXACT_MATCH, CLOSE_MATCH, EXACT_PART_MATCH, PART_ALIAS_MATCH) else "related"
 
         classified.append(d)
 
@@ -614,29 +1048,35 @@ def rank_listings(
     """Sort listings strictly preserving relevance tiers so price never overrides relevance.
 
     Priority:
-        1. EXACT_MATCH
-        2. CLOSE_MATCH
-        3. COMPONENT
+        1. EXACT_MATCH / EXACT_PART_MATCH
+        2. CLOSE_MATCH / PART_ALIAS_MATCH
+        3. COMPONENT / RELATED_COMPONENT
         4. ACCESSORY
-        5. NEEDS_REVIEW
-        (IRRELEVANT and INCOMPATIBLE products are filtered out)
+        5. NEEDS_REVIEW / UNKNOWN
+        (IRRELEVANT, INCOMPATIBLE, and WRONG_PART_TYPE products are filtered out)
 
     Within each tier, products are sorted by price (asc or desc).
     """
-    # Exclude IRRELEVANT and INCOMPATIBLE products
+    # Exclude IRRELEVANT, INCOMPATIBLE, and WRONG_PART_TYPE products
     valid = [
         l for l in listings
-        if l.get("relevance") not in (IRRELEVANT, INCOMPATIBLE)
-        and l.get("fitment") != "incompatible"
+        if l.get("relevance") not in (IRRELEVANT, INCOMPATIBLE, WRONG_PART_TYPE)
+        and l.get("fitment") not in ("incompatible", "wrong_part_type")
+        and l.get("part_family_classification") != WRONG_PART_TYPE
+        and l.get("product_type") not in ("incompatible", "irrelevant", "wrong_part_type")
     ]
 
     # Group by relevance tier
     tiers: Dict[str, List[Dict[str, Any]]] = {
+        EXACT_PART_MATCH: [],
         EXACT_MATCH: [],
+        PART_ALIAS_MATCH: [],
         CLOSE_MATCH: [],
+        RELATED_COMPONENT: [],
         COMPONENT: [],
         ACCESSORY: [],
         NEEDS_REVIEW: [],
+        UNKNOWN: [],
     }
 
     for item in valid:
@@ -666,7 +1106,13 @@ def rank_listings(
         return priced + unpriced
 
     ranked: List[Dict[str, Any]] = []
-    for tier_key in (EXACT_MATCH, CLOSE_MATCH, COMPONENT, ACCESSORY, NEEDS_REVIEW):
-        ranked.extend(sort_tier(tiers[tier_key]))
+    # Primary matches
+    ranked.extend(sort_tier(tiers[EXACT_PART_MATCH] + tiers[EXACT_MATCH]))
+    ranked.extend(sort_tier(tiers[PART_ALIAS_MATCH] + tiers[CLOSE_MATCH]))
+    # Component and accessory tiers
+    ranked.extend(sort_tier(tiers[RELATED_COMPONENT] + tiers[COMPONENT]))
+    ranked.extend(sort_tier(tiers[ACCESSORY]))
+    # Review / Unknown tier
+    ranked.extend(sort_tier(tiers[NEEDS_REVIEW] + tiers[UNKNOWN]))
 
     return ranked

@@ -1,0 +1,250 @@
+[
+  {
+    "test_id": 1,
+    "query": "Tata Nexon 2023 1.2L Revotron fuel pump",
+    "target": "Tata Nexon 2023 fuel pump",
+    "total_time_seconds": 10.18,
+    "first_supplier": "boodmo",
+    "products_count": 0,
+    "forbidden_found": [],
+    "records": [],
+    "vendor_outcomes": [
+      {
+        "vendor": "boodmo",
+        "status": "failed",
+        "count": 0,
+        "elapsed": 6.17
+      },
+      {
+        "vendor": "autodukan",
+        "status": "no_results",
+        "count": 0,
+        "elapsed": 10.17
+      }
+    ]
+  },
+  {
+    "test_id": 2,
+    "query": "Hyundai i20 2021 1.2L Kappa air filter",
+    "target": "Hyundai i20 2021 air filter",
+    "total_time_seconds": 13.13,
+    "first_supplier": "boodmo",
+    "products_count": 0,
+    "forbidden_found": [],
+    "records": [],
+    "vendor_outcomes": [
+      {
+        "vendor": "boodmo",
+        "status": "failed",
+        "count": 0,
+        "elapsed": 5.84
+      },
+      {
+        "vendor": "autodukan",
+        "status": "no_results",
+        "count": 0,
+        "elapsed": 13.12
+      }
+    ]
+  },
+  {
+    "test_id": 3,
+    "query": "Tata Safari 2022 2.0L Kryotec oil filter",
+    "target": "Tata Safari 2022 oil filter",
+    "total_time_seconds": 13.64,
+    "first_supplier": "boodmo",
+    "products_count": 4,
+    "forbidden_found": [],
+    "records": [
+      {
+        "title": "OIL FILTER",
+        "supplier": "autodukan",
+        "price": 120.0,
+        "fitment": "verified",
+        "part_classification": "EXACT_PART_MATCH",
+        "relevance": "EXACT_MATCH",
+        "decision": "accepted",
+        "rejection_reason": null
+      },
+      {
+        "title": "OIL FILTER",
+        "supplier": "autodukan",
+        "price": 165.75,
+        "fitment": "verified",
+        "part_classification": "EXACT_PART_MATCH",
+        "relevance": "EXACT_MATCH",
+        "decision": "accepted",
+        "rejection_reason": null
+      },
+      {
+        "title": "Zip Oil Filter, OIL FILTER ZO1036",
+        "supplier": "autodukan",
+        "price": 217.5,
+        "fitment": "verified",
+        "part_classification": "EXACT_PART_MATCH",
+        "relevance": "EXACT_MATCH",
+        "decision": "accepted",
+        "rejection_reason": null
+      },
+      {
+        "title": "OIL FILTER",
+        "supplier": "autodukan",
+        "price": 318.75,
+        "fitment": "verified",
+        "part_classification": "EXACT_PART_MATCH",
+        "relevance": "EXACT_MATCH",
+        "decision": "accepted",
+        "rejection_reason": null
+      }
+    ],
+    "vendor_outcomes": [
+      {
+        "vendor": "boodmo",
+        "status": "failed",
+        "count": 0,
+        "elapsed": 5.68
+      },
+      {
+        "vendor": "autodukan",
+        "status": "ok",
+        "count": 4,
+        "elapsed": 13.58
+      }
+    ]
+  },
+  {
+    "test_id": 4,
+    "query": "Maruti Swift 2020 1.2L VXI brake pad",
+    "target": "Maruti Swift 2020 brake pad",
+    "total_time_seconds": 18.53,
+    "first_supplier": "boodmo",
+    "products_count": 11,
+    "forbidden_found": [],
+    "records": [
+      {
+        "title": "FRONT BRAKE PAD",
+        "supplier": "autodukan",
+        "price": 850.0,
+        "fitment": "verified",
+        "part_classification": "EXACT_PART_MATCH",
+        "relevance": "EXACT_MATCH",
+        "decision": "accepted",
+        "rejection_reason": null
+      },
+      {
+        "title": "Front Brake Pad Set",
+        "supplier": "autodukan",
+        "price": 885.6,
+        "fitment": "verified",
+        "part_classification": "EXACT_PART_MATCH",
+        "relevance": "EXACT_MATCH",
+        "decision": "accepted",
+        "rejection_reason": null
+      },
+      {
+        "title": "Front Brake Pad Set",
+        "supplier": "autodukan",
+        "price": 926.25,
+        "fitment": "verified",
+        "part_classification": "EXACT_PART_MATCH",
+        "relevance": "EXACT_MATCH",
+        "decision": "accepted",
+        "rejection_reason": null
+      },
+      {
+        "title": "BRAKE PAD",
+        "supplier": "autodukan",
+        "price": 937.5,
+        "fitment": "verified",
+        "part_classification": "EXACT_PART_MATCH",
+        "relevance": "EXACT_MATCH",
+        "decision": "accepted",
+        "rejection_reason": null
+      },
+      {
+        "title": "BRAKE PADS FRONT",
+        "supplier": "autodukan",
+        "price": 937.5,
+        "fitment": "verified",
+        "part_classification": "EXACT_PART_MATCH",
+        "relevance": "EXACT_MATCH",
+        "decision": "accepted",
+        "rejection_reason": null
+      },
+      {
+        "title": "BALENO NEW / SWIFT NEW -2018 - FRONT MAF15027 Brake Pads SMPL",
+        "supplier": "autodukan",
+        "price": 990.36,
+        "fitment": "verified",
+        "part_classification": "EXACT_PART_MATCH",
+        "relevance": "EXACT_MATCH",
+        "decision": "accepted",
+        "rejection_reason": null
+      },
+      {
+        "title": "BRAKE PADS CERAMIC -FRONT",
+        "supplier": "autodukan",
+        "price": 1033.5,
+        "fitment": "verified",
+        "part_classification": "EXACT_PART_MATCH",
+        "relevance": "EXACT_MATCH",
+        "decision": "accepted",
+        "rejection_reason": null
+      },
+      {
+        "title": "Front Brake Pad Set",
+        "supplier": "autodukan",
+        "price": 1297.74,
+        "fitment": "verified",
+        "part_classification": "EXACT_PART_MATCH",
+        "relevance": "EXACT_MATCH",
+        "decision": "accepted",
+        "rejection_reason": null
+      },
+      {
+        "title": "Front Brake Pad Set",
+        "supplier": "autodukan",
+        "price": 1407.75,
+        "fitment": "verified",
+        "part_classification": "EXACT_PART_MATCH",
+        "relevance": "EXACT_MATCH",
+        "decision": "accepted",
+        "rejection_reason": null
+      },
+      {
+        "title": "BRAKE PADS CERAMIC -FRONT",
+        "supplier": "autodukan",
+        "price": 1407.75,
+        "fitment": "verified",
+        "part_classification": "EXACT_PART_MATCH",
+        "relevance": "EXACT_MATCH",
+        "decision": "accepted",
+        "rejection_reason": null
+      },
+      {
+        "title": "PAD SET",
+        "supplier": "autodukan",
+        "price": 1769.76,
+        "fitment": "verified",
+        "part_classification": "RELATED_COMPONENT",
+        "relevance": "COMPONENT",
+        "decision": "accepted",
+        "rejection_reason": null
+      }
+    ],
+    "vendor_outcomes": [
+      {
+        "vendor": "boodmo",
+        "status": "failed",
+        "count": 0,
+        "elapsed": 6.46
+      },
+      {
+        "vendor": "autodukan",
+        "status": "ok",
+        "count": 11,
+        "elapsed": 18.5
+      }
+    ]
+  }
+]

@@ -1713,6 +1713,18 @@ class AutoDukanAdapter:
                     log.info("AutoDukan rejected incompatible product '%s' (brand: '%s') for vehicle '%s %s'", clean_title, raw_card_brand, target_maker, target_model)
                     continue
 
+                # Strictly reject wrong part types (e.g. brackets, caps, separators when searching for fuel pump or air filter)
+                req_part = profile.part or profile.hints.get("raw_request") or ""
+                if req_part:
+                    part_status, part_reason = relevance.check_part_family_compatibility(
+                        product_title=clean_title,
+                        requested_part=req_part,
+                        category=profile.category or "",
+                    )
+                    if part_status == relevance.WRONG_PART_TYPE:
+                        log.info("AutoDukan rejected wrong part type '%s': %s", clean_title, part_reason)
+                        continue
+
                 item_fitment = "verified" if is_verified else "unverified"
                 item_fitment_basis = (
                     f"AutoDukan verified vehicle catalog for {vehicle}"
@@ -1833,6 +1845,18 @@ class AutoDukanAdapter:
             if compat_status == "incompatible":
                 log.info("AutoDukan rejected incompatible product '%s' (brand: '%s') for vehicle '%s %s'", clean_title, raw_card_brand, target_maker, target_model)
                 continue
+
+            # Strictly reject wrong part types (e.g. brackets, caps, separators when searching for fuel pump or air filter)
+            req_part = profile.part or profile.hints.get("raw_request") or ""
+            if req_part:
+                part_status, part_reason = relevance.check_part_family_compatibility(
+                    product_title=clean_title,
+                    requested_part=req_part,
+                    category=profile.category or "",
+                )
+                if part_status == relevance.WRONG_PART_TYPE:
+                    log.info("AutoDukan rejected wrong part type '%s': %s", clean_title, part_reason)
+                    continue
 
             item_fitment = "verified" if is_verified else "unverified"
             item_fitment_basis = (
