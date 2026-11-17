@@ -284,7 +284,11 @@ class BoodmoAdapter:
 
     async def resolve_category(self, profile: VehicleProfile) -> Optional[NeedInput]:
         """Map the spoken part name to one Boodmo leaf category using the comprehensive offline catalogue."""
-        if profile.category and self.category_href:
+        if profile.hints.get("category_fallback") or profile.hints.get("use_search_fallback"):
+            profile.category = profile.part
+            return None
+
+        if profile.category and (self.category_href or profile.hints.get("category_resolved")):
             return None
 
         catalog = _load_catalog()
@@ -368,10 +372,10 @@ class BoodmoAdapter:
             profile.hints["alternate_categories"] = [r for r in ranked[1:4] if r in cat_map]
             return None
 
-        cands = ["Maintenance Service Parts", "Filters", "Brake System", "Engine"]
+        cands = ["Maintenance Service Parts", "Filters", "Brake System", "Engine", "None of these", "Search by part name instead"]
         return NeedInput(field="category",
                          question=f"Boodmo has a few kinds of {part}. Which one do you need: "
-                                  + ", ".join(cands[:-1]) + " or " + cands[-1] + "?",
+                                  + ", ".join(cands[:-2]) + ", " + cands[-2] + " or " + cands[-1] + "?",
                          options=cands)
 
     def _set_category(self, profile: VehicleProfile, name: str, href: str,
@@ -381,7 +385,13 @@ class BoodmoAdapter:
         return None
 
     def choose_category(self, profile: VehicleProfile, name: str) -> None:
-        """Apply a category the mechanic picked from a NeedInput list."""
+        """Apply a category the mechanic picked from a NeedInput list or escape option."""
+        if any(term in name.lower() for term in ("none of these", "none", "other", "search by part", "skip")):
+            profile.hints["category_fallback"] = True
+            profile.hints["use_search_fallback"] = True
+            profile.category = profile.part
+            self.category_href = ""
+            return
         catalog = _load_catalog()
         cat_map = catalog.get("categories", {}) or catalog.get("leaf", {})
         if name in cat_map:
@@ -392,7 +402,8 @@ class BoodmoAdapter:
             if name in kids:
                 self._set_category(profile, name, kids[name], remember_part=True)
                 return
-        raise KeyError(name)
+        profile.category = name
+        self.category_href = ""
 
     # ------------------------------------------------------------ dropdowns
 
@@ -806,6 +817,21 @@ class BoodmoAdapter:
         t0_collect = time.time()
         m = perf_monitor.get_metrics(self.session_id, self.name)
         await self.start()
+
+        if getattr(self, "_challenge_detected", False) or getattr(self, "_is_blocked", False):
+            elapsed = round(time.time() - t0_collect, 2)
+            m.total_seconds = elapsed
+            m.status = "challenge_detected"
+            perf_monitor.log_supplier_completed(self.session_id, self.name)
+            return SearchOutcome(
+                vendor=self.name,
+                status="challenge_detected",
+                vehicle_label=" ".join(x for x in (profile.maker, profile.model, profile.year, profile.variant) if x),
+                listings=[],
+                source_url=self.page.url if self.page else BASE,
+                message="Boodmo bot-protection challenge encountered; automated search safely skipped.",
+                elapsed_seconds=elapsed,
+            )
 
         # Guard against callers that invoke collect() without first calling advance().
         if not self._advanced_ok and not getattr(self, "_using_search_fallback", False):

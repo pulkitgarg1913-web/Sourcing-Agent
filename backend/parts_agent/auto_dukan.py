@@ -27,6 +27,7 @@ from urllib.parse import parse_qs, urljoin, urlparse
 from playwright.async_api import Browser, Page
 
 from . import llm
+from . import relevance
 from .browser_manager import get_browser_manager, CHROMIUM_ARGS, UA
 from .models import Listing, NeedInput, SearchOutcome, VehicleProfile
 from .perf_logger import perf_monitor
@@ -352,8 +353,16 @@ class AutoDukanAdapter:
                 question="Which spare part or OEM part number do you need?",
                 options=[],
             )
+
+        if profile.hints.get("category_fallback") or profile.hints.get("use_search_fallback") or getattr(self, "_using_search_fallback", False):
+            profile.category = profile.part
+            self._category_paths[_norm(profile.part)] = [profile.part]
+            return None
+
         requested_category = _clean(getattr(profile, "category", ""))
-        if requested_category and _norm(requested_category) in self._category_paths:
+        if requested_category:
+            if _norm(requested_category) not in self._category_paths:
+                self._category_paths[_norm(requested_category)] = self._path_for_category(requested_category)
             return None
 
         part = _norm(profile.part)
@@ -367,6 +376,8 @@ class AutoDukanAdapter:
             (r"\b(oil\s*filters?)\b", "OIL FILTER"),
             (r"\b(air\s*filters?)\b", "AIR FILTER"),
             (r"\b(cabin\s*filters?|ac\s*filters?)\b", "CABIN FILTER"),
+            (r"\b(fuel\s*pump|fuel\s*delivery|fuel\s*sender|fuel\s*module|petrol\s*pump|diesel\s*pump)\b", "FUEL PUMP"),
+            (r"\b(fuel\s*system)\b", "FUEL SYSTEM"),
             (r"\b(fuel\s*filters?)\b", "FUEL FILTER"),
             (r"\b(brake\s*pads?|disc\s*pads?)\b", "BRAKE PADS"),
             (r"\b(brake\s*shoes?|break\s*shoes?|drum\s*brakes?)\b", "BRAKE SHOES"),
@@ -433,20 +444,44 @@ class AutoDukanAdapter:
                                      if _same_option(choice, option)), None)
                 except Exception as exc:
                     log.info("AutoDukan top-level category mapping failed: %s", exc)
+
             if not selected:
+                # If all available categories are completely unrelated to the requested part,
+                # fall back to keyword search directly rather than forcing the user into an unrelated category.
+                part_tokens = set(_norm(profile.part).split())
+                has_relevant_category = any(
+                    bool(part_tokens & set(_norm(opt).split()))
+                    for opt in self._category_options
+                )
+                if not has_relevant_category:
+                    log.info("AutoDukan has no relevant category for '%s'; falling back to direct search", profile.part)
+                    self._using_search_fallback = True
+                    profile.hints["category_fallback"] = True
+                    profile.category = profile.part
+                    self._category_paths[_norm(profile.part)] = [profile.part]
+                    return None
+
+                opts = list(self._category_options or ["Lighting", "Steering", "Brake System", "Body Parts"])
+                for esc in ("None of these", "Search by part name instead"):
+                    if esc not in opts:
+                        opts.append(esc)
                 return NeedInput(
                     field="category",
                     question=f"Which AutoDukan category best fits {profile.part}?",
-                    options=self._category_options or ["Lighting", "Steering", "Brake System", "Body Parts"],
+                    options=opts,
                 )
             parent = selected
 
         root = self._category_link(category_links, [parent], "/subcategory/")
         if not root:
+            opts = list(self._category_options)
+            for esc in ("None of these", "Search by part name instead"):
+                if esc not in opts:
+                    opts.append(esc)
             return NeedInput(
                 field="category",
                 question=f"Which AutoDukan category best fits {profile.part}?",
-                options=self._category_options,
+                options=opts,
             )
         try:
             await self._goto(root["href"])
@@ -494,15 +529,32 @@ class AutoDukanAdapter:
             for link in children:
                 label = self._category_link_label(link)
                 self._category_paths[_norm(label)] = [parent, label]
+            leaf_options = list(child_labels)
+            for esc in ("None of these", "Search by part name instead"):
+                if esc not in leaf_options:
+                    leaf_options.append(esc)
             return NeedInput(
                 field="category",
                 question=f"Which AutoDukan subcategory best fits {profile.part} under {parent}?",
-                options=child_labels,
+                options=leaf_options,
             )
 
         profile.category = selected_leaf
         self._category_paths[_norm(selected_leaf)] = [parent, selected_leaf]
         return None
+
+    def choose_category(self, profile: VehicleProfile, name: str) -> None:
+        """Apply a category the mechanic picked from a NeedInput list or escape option."""
+        if any(term in name.lower() for term in ("none of these", "none", "other", "search by part", "search directly", "skip")):
+            self._using_search_fallback = True
+            self._category_confirmed = True
+            profile.hints["category_fallback"] = True
+            profile.hints["use_search_fallback"] = True
+            profile.category = profile.part
+            self._category_paths[_norm(profile.part)] = [profile.part]
+            return
+        profile.category = name
+        self._category_paths[_norm(name)] = self._path_for_category(name)
 
     @staticmethod
     def _path_for_category(category: str) -> list[str]:
@@ -514,12 +566,14 @@ class AutoDukanAdapter:
             return ["LIGHTING", "HEADLIGHT"]
         if "fog" in normalized:
             return ["LIGHTING", "FOG LAMP"]
+        if "fuelpump" in normalized or "fuelsender" in normalized or "fueldelivery" in normalized or "petrolpump" in normalized or "dieselpump" in normalized or "fuelsystem" in normalized:
+            return ["FUEL SYSTEM", "FUEL PUMP"]
+        if "fuelfilter" in normalized:
+            return ["FILTERS", "FUEL FILTER"]
         if "oilfilter" in normalized or "oil" in normalized:
             return ["FILTERS", "OIL FILTER"]
         if "airfilter" in normalized or "air" in normalized:
             return ["FILTERS", "AIR FILTER"]
-        if "fuelfilter" in normalized or "fuel" in normalized:
-            return ["FILTERS", "FUEL FILTER"]
         if "cabinfilter" in normalized or "cabin" in normalized:
             return ["FILTERS", "CABIN FILTER"]
         if "filter" in normalized:
@@ -575,14 +629,16 @@ class AutoDukanAdapter:
             return "headlight"
         if "fog" in norm:
             return "fog-light"
+        if "fuelpump" in norm or "fuelsender" in norm or "fueldelivery" in norm or "fuelsystem" in norm or "fuel-pump" in norm:
+            return "fuel-pump"
+        if "fuelfilter" in norm or norm in ("fuel-filter", "fuel filter"):
+            return "fuel-filter"
         if "oil" in norm:
             return "oil-filter"
         if "air" in norm:
             return "air-filter"
         if "cabin" in norm or "acfilter" in norm:
             return "cabin-filter"
-        if "fuel" in norm:
-            return "fuel-filter"
         if "filter" in norm:
             return "oil-filter"
         if "clutch" in norm:
@@ -1348,12 +1404,22 @@ class AutoDukanAdapter:
             try:
                 if not self.page or self.page.is_closed():
                     return []
-                return await self.page.evaluate(
+                eval_res = await self.page.evaluate(
                     r"""() => {
                 const clean = v => (v || '').replace(/\s+/g, ' ').trim();
                 const abs = href => { try { return new URL(href, location.href).href; } catch (_) { return ''; } };
-                const bad = /^(home|product list|login|sign in|contact|faq|blogs|about us|all categories|oem brands|oes brands|return policy|privacy policy|terms of use|disclaimer|become an autodukan seller|become a seller|contact us|about us|more than parts.*|we'd love to hear.*|customer care|help center|download app|all rights reserved|terms)$/i;
-                const nonProductPaths = /^\/(brands?|services|sellers?|return-policy|privacy-policy|terms-of-use|terms|disclaimer|contact(-us)?|about(-us)?|blogs?|faq|help|cart|checkout|login|register|track-order|order|account|subcategory|products-list)(\/|$)/i;
+
+                // 1. Explicit Challenge Page Check
+                const docTitle = (document.title || '').toLowerCase();
+                const bodyText = (document.body ? document.body.innerText.slice(0, 1500) : '').toLowerCase();
+                if (docTitle.includes('just a moment') || docTitle.includes('attention required') ||
+                    docTitle.includes('cloudflare') || bodyText.includes('cf-challenge') ||
+                    bodyText.includes('turnstile') || bodyText.includes('verify you are human')) {
+                    return { challenge: true, items: [] };
+                }
+
+                const bad = /^(home|product list|login|sign in|contact|faq|blogs|about us|all categories|oem brands|oes brands|return policy|privacy policy|terms of use|disclaimer|become an autodukan seller|become a seller|contact us|about us|more than parts.*|we'd love to hear.*|customer care|help center|download app|all rights reserved|terms|shop|cart|checkout)$/i;
+                const nonProductPaths = /^\/(cdn-cgi|brands?|services|sellers?|return-policy|privacy-policy|terms-of-use|terms|disclaimer|contact(-us)?|about(-us)?|blogs?|faq|help|cart|checkout|login|register|track-order|order|account|subcategory|products-list)(\/|$)/i;
                 const anchors = [...document.querySelectorAll('a[href]')];
                 const out = [];
                 const seen = new Set();
@@ -1372,11 +1438,13 @@ class AutoDukanAdapter:
                     // Rendered taxonomy links use /products/<category>/<subcategory>?page=1.
                     // They are navigation, not product listings.
                     if (productUrl.searchParams.has('page') || /\/subcategory\/[^/]+\/?$/i.test(productUrl.pathname)) continue;
-                    // Exclude navigation, brand, seller, and policy routes
-                    if (nonProductPaths.test(productUrl.pathname)) continue;
+                    // Exclude navigation, brand, seller, cdn-cgi, and policy routes
+                    if (nonProductPaths.test(productUrl.pathname) || productUrl.pathname.includes('cdn-cgi') || href.includes('cdn-cgi')) continue;
                     if (seen.has(href)) continue;
 
                     const isProductDetailUrl = /\/product(s)?\/[0-9a-zA-Z_-]+/i.test(productUrl.pathname) && !productUrl.pathname.includes('products-list');
+                    if (!isProductDetailUrl) continue;
+
                     let foundCard = false;
                     let card = a;
                     for (let i = 0; i < 6; i++) {
@@ -1425,6 +1493,11 @@ class AutoDukanAdapter:
                 return out;
             }"""
                 )
+                if isinstance(eval_res, dict) and eval_res.get("challenge"):
+                    log.warning("AutoDukan bot-protection challenge detected during _read_cards")
+                    self._challenge_detected = True
+                    raise RuntimeError(f"AutoDukan bot-protection challenge encountered at {self.page.url}")
+                return eval_res if isinstance(eval_res, list) else eval_res.get("items", [])
             except Exception as exc:
                 log.warning("AutoDukan _read_cards attempt %d failed: %s", attempt + 1, exc)
                 if attempt == 0 and self.page and not self.page.is_closed():
@@ -1533,6 +1606,21 @@ class AutoDukanAdapter:
         await self.start()
         vehicle = _vehicle_label(profile)
 
+        if getattr(self, "_challenge_detected", False) or getattr(self, "_is_blocked", False):
+            elapsed = round(time.time() - t0_collect, 2)
+            m.total_seconds = elapsed
+            m.status = "challenge_detected"
+            perf_monitor.log_supplier_completed(self.session_id, self.name)
+            return SearchOutcome(
+                vendor=self.name,
+                status="challenge_detected",
+                vehicle_label=vehicle,
+                listings=[],
+                source_url=self.last_search_url or (self.page.url if self.page else self.base_url),
+                message="AutoDukan bot-protection challenge encountered; automated search safely skipped.",
+                elapsed_seconds=elapsed,
+            )
+
         target_url = self.last_search_url or getattr(self, "_category_url", None)
         if target_url and (not self.page.url or self.page.url == "about:blank"):
             try:
@@ -1603,6 +1691,8 @@ class AutoDukanAdapter:
             listings: list[Listing] = []
             seen: set[str] = set()
             is_verified = bool(self._vehicle_confirmed and (self._car_model_id or (self._category_confirmed and not getattr(self, "_using_search_fallback", False))))
+            target_maker = profile.maker or profile.hints.get("make") or ""
+            target_model = profile.model or profile.hints.get("model") or ""
             for card in cards:
                 url = urljoin(self.base_url + "/", card.get("url") or "")
                 title = _clean(card.get("title"))
@@ -1610,20 +1700,42 @@ class AutoDukanAdapter:
                     continue
                 seen.add(url)
                 clean_title = re.sub(r"^(?:Add to Cart|View)\s*", "", title, flags=re.I).strip()
+                raw_card_brand = _clean(card.get("brand") or "")
+
+                # Strictly reject cross-brand contradictory products (e.g. Audi oil filter when searching Tata)
+                compat_status, compat_reason = relevance.check_vehicle_compatibility(
+                    product_title=clean_title,
+                    product_brand=raw_card_brand,
+                    target_maker=target_maker,
+                    target_model=target_model,
+                )
+                if compat_status == "incompatible":
+                    log.info("AutoDukan rejected incompatible product '%s' (brand: '%s') for vehicle '%s %s'", clean_title, raw_card_brand, target_maker, target_model)
+                    continue
+
+                item_fitment = "verified" if is_verified else "unverified"
+                item_fitment_basis = (
+                    f"AutoDukan verified vehicle catalog for {vehicle}"
+                    if is_verified
+                    else f"AutoDukan keyword search bar fallback for '{vehicle}'"
+                )
+
+                assigned_brand = raw_card_brand or profile.maker or "Aftermarket"
                 listing = Listing(
                     title=clean_title,
-                    brand=_clean(card.get("brand") or profile.maker or ""),
+                    brand=assigned_brand,
                     part_number=_clean(card.get("sku") or ""),
                     price=_price(card.get("priceText")),
                     mrp=_price(card.get("mrpText")),
                     url=url,
-                    fitment="verified" if is_verified else "unverified",
-                    fitment_basis=(
-                        f"AutoDukan verified vehicle catalog for {vehicle}"
-                        if is_verified
-                        else f"AutoDukan keyword search bar fallback for '{vehicle}'"
-                    ),
+                    fitment=item_fitment,
+                    fitment_basis=item_fitment_basis,
                 )
+                if item_fitment != "verified":
+                    listing.notes.append("Confirm exact OEM/variant compatibility with AutoDukan before ordering")
+                if listing.price is None:
+                    listing.notes.append("price was not readable on the category result")
+                listing.available = True if listing.price is not None else None
                 listings.append(listing)
             elapsed = round(time.time() - t0_collect, 2)
             m.total_seconds = elapsed
@@ -1699,6 +1811,8 @@ class AutoDukanAdapter:
 
         listings: list[Listing] = []
         seen: set[str] = set()
+        target_maker = profile.maker or profile.hints.get("make") or ""
+        target_model = profile.model or profile.hints.get("model") or ""
         for card in cards:
             url = urljoin(self.base_url + "/", card.get("url") or "")
             title = _clean(card.get("title"))
@@ -1707,22 +1821,38 @@ class AutoDukanAdapter:
             seen.add(url)
             is_verified = bool(self._vehicle_confirmed and (self._car_model_id or (self._category_confirmed and not getattr(self, "_using_search_fallback", False))))
             clean_title = re.sub(r"^(?:Add to Cart|View)\s*", "", title, flags=re.I).strip()
-            card_brand = _clean(card.get("brand") or profile.maker or "")
+            raw_card_brand = _clean(card.get("brand") or "")
+
+            # Strictly reject cross-brand contradictory products (e.g. Audi oil filter when searching Tata)
+            compat_status, compat_reason = relevance.check_vehicle_compatibility(
+                product_title=clean_title,
+                product_brand=raw_card_brand,
+                target_maker=target_maker,
+                target_model=target_model,
+            )
+            if compat_status == "incompatible":
+                log.info("AutoDukan rejected incompatible product '%s' (brand: '%s') for vehicle '%s %s'", clean_title, raw_card_brand, target_maker, target_model)
+                continue
+
+            item_fitment = "verified" if is_verified else "unverified"
+            item_fitment_basis = (
+                f"AutoDukan verified vehicle catalog for {vehicle}"
+                if is_verified
+                else f"AutoDukan keyword search bar fallback for '{vehicle}'"
+            )
+
+            assigned_brand = raw_card_brand or profile.maker or "Aftermarket"
             listing = Listing(
                 title=clean_title,
-                brand=card_brand,
+                brand=assigned_brand,
                 part_number=_clean(card.get("sku") or ""),
                 price=_price(card.get("priceText")),
                 mrp=_price(card.get("mrpText")),
                 url=url,
-                fitment="verified" if is_verified else "unverified",
-                fitment_basis=(
-                    f"AutoDukan verified vehicle catalog for {vehicle}"
-                    if is_verified
-                    else f"AutoDukan keyword search bar fallback for '{vehicle}'"
-                ),
+                fitment=item_fitment,
+                fitment_basis=item_fitment_basis,
             )
-            if not is_verified:
+            if item_fitment != "verified":
                 listing.notes.append("Confirm exact OEM/variant compatibility with AutoDukan before ordering")
             if listing.price is None:
                 listing.notes.append("price was not readable on the category result")

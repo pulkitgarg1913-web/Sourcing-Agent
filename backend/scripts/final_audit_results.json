@@ -1,0 +1,608 @@
+{
+  "test_results": [
+    {
+      "test_id": 1,
+      "query": "Tata Safari oil filter",
+      "vehicle": "Tata Safari 2022 2.0L Kryotec",
+      "part": "Oil Filter",
+      "cache_status": "MISS (forced uncached)",
+      "first_result_time": "2026-11-17 13:07:59",
+      "first_supplier": "boodmo",
+      "total_duration_seconds": 13.11,
+      "total_products_count": 5,
+      "rejected_incompatible_count": 0,
+      "vendor_outcomes": [
+        {
+          "vendor": "boodmo",
+          "status": "failed",
+          "count": 0,
+          "elapsed": 6.31
+        },
+        {
+          "vendor": "autodukan",
+          "status": "ok",
+          "count": 5,
+          "elapsed": 13.09
+        }
+      ],
+      "sample_listings": [
+        {
+          "title": "OIL FILTER",
+          "brand": "ZIP",
+          "part_number": "ZS1041",
+          "price": 120.0,
+          "mrp": 160.0,
+          "url": "https://autodukan.com/product/1891183",
+          "origin": null,
+          "part_class": null,
+          "match": "exact",
+          "offers": [],
+          "best_offer": null,
+          "fitment": "verified",
+          "fitment_basis": "AutoDukan verified vehicle catalog for Tata Safari 2022 2.0L Kryotec",
+          "available": true,
+          "notes": [
+            "category-card data only; detail page not opened"
+          ],
+          "relevance": "EXACT_MATCH",
+          "relevance_score": 0.97,
+          "relevance_reason": "Direct complete assembly match for requested 'oil filter'.",
+          "product_type": "complete_assembly",
+          "vendor": "autodukan"
+        },
+        {
+          "title": "OIL FILTER",
+          "brand": "DKMAX",
+          "part_number": "025OFABTA",
+          "price": 165.75,
+          "mrp": 221.0,
+          "url": "https://autodukan.com/product/1872430",
+          "origin": null,
+          "part_class": null,
+          "match": "exact",
+          "offers": [],
+          "best_offer": null,
+          "fitment": "verified",
+          "fitment_basis": "AutoDukan verified vehicle catalog for Tata Safari 2022 2.0L Kryotec",
+          "available": true,
+          "notes": [
+            "category-card data only; detail page not opened"
+          ],
+          "relevance": "EXACT_MATCH",
+          "relevance_score": 0.97,
+          "relevance_reason": "Direct complete assembly match for requested 'oil filter'.",
+          "product_type": "complete_assembly",
+          "vendor": "autodukan"
+        },
+        {
+          "title": "Zip Oil Filter, OIL FILTER ZO1036",
+          "brand": "ZIP",
+          "part_number": "ZO1036",
+          "price": 217.5,
+          "mrp": 290.0,
+          "url": "https://autodukan.com/product/zip-oil-filter-oil-filter-zo1036-1313384",
+          "origin": null,
+          "part_class": null,
+          "match": "exact",
+          "offers": [],
+          "best_offer": null,
+          "fitment": "verified",
+          "fitment_basis": "AutoDukan verified vehicle catalog for Tata Safari 2022 2.0L Kryotec",
+          "available": true,
+          "notes": [
+            "category-card data only; detail page not opened"
+          ],
+          "relevance": "EXACT_MATCH",
+          "relevance_score": 0.97,
+          "relevance_reason": "Direct complete assembly match for requested 'oil filter'.",
+          "product_type": "complete_assembly",
+          "vendor": "autodukan"
+        },
+        {
+          "title": "OIL FILTER",
+          "brand": "Bosch",
+          "part_number": "F002H235668F8",
+          "price": 318.75,
+          "mrp": 425.0,
+          "url": "https://autodukan.com/product/oil-filter-1177787",
+          "origin": null,
+          "part_class": null,
+          "match": "exact",
+          "offers": [],
+          "best_offer": null,
+          "fitment": "verified",
+          "fitment_basis": "AutoDukan verified vehicle catalog for Tata Safari 2022 2.0L Kryotec",
+          "available": true,
+          "notes": [
+            "category-card data only; detail page not opened"
+          ],
+          "relevance": "EXACT_MATCH",
+          "relevance_score": 0.97,
+          "relevance_reason": "Direct complete assembly match for requested 'oil filter'.",
+          "product_type": "complete_assembly",
+          "vendor": "autodukan"
+        },
+        {
+          "title": "FILTERING ELEMENT_H5",
+          "brand": "TATA",
+          "part_number": "71754237",
+          "price": 1848.96,
+          "mrp": 1926.0,
+          "url": "https://autodukan.com/product/filtering-element-487724",
+          "origin": null,
+          "part_class": null,
+          "match": "related",
+          "offers": [],
+          "best_offer": null,
+          "fitment": "verified",
+          "fitment_basis": "AutoDukan verified vehicle catalog for Tata Safari 2022 2.0L Kryotec",
+          "available": true,
+          "notes": [
+            "category-card data only; detail page not opened"
+          ],
+          "relevance": "COMPONENT",
+          "relevance_score": 0.92,
+          "relevance_reason": "Sub-assembly component (element) of the oil filter, not a complete replacement assembly.",
+          "product_type": "component",
+          "vendor": "autodukan"
+        }
+      ]
+    },
+    {
+      "test_id": 2,
+      "query": "Tata Nexon fuel pump",
+      "vehicle": "Tata Nexon 2023 1.2L Revotron",
+      "part": "Fuel Pump",
+      "cache_status": "MISS (forced uncached)",
+      "first_result_time": "2026-11-17 13:08:12",
+      "first_supplier": "boodmo",
+      "total_duration_seconds": 8.65,
+      "total_products_count": 6,
+      "rejected_incompatible_count": 0,
+      "vendor_outcomes": [
+        {
+          "vendor": "boodmo",
+          "status": "failed",
+          "count": 0,
+          "elapsed": 5.63
+        },
+        {
+          "vendor": "autodukan",
+          "status": "ok",
+          "count": 6,
+          "elapsed": 8.63
+        }
+      ],
+      "sample_listings": [
+        {
+          "title": "SEPERATOR FOR TWO PIPELINES",
+          "brand": "TATA",
+          "part_number": "284242807704",
+          "price": 5.76,
+          "mrp": 6.0,
+          "url": "https://autodukan.com/product/seperator-for-two-pipelines-1585835",
+          "origin": null,
+          "part_class": null,
+          "match": "related",
+          "offers": [],
+          "best_offer": null,
+          "fitment": "verified",
+          "fitment_basis": "AutoDukan verified vehicle catalog for Tata Nexon 2023 1.2L Revotron",
+          "available": true,
+          "notes": [
+            "category-card data only; detail page not opened"
+          ],
+          "relevance": "COMPONENT",
+          "relevance_score": 0.75,
+          "relevance_reason": "Broader assembly returned for specific component query.",
+          "product_type": "complete_assembly",
+          "vendor": "autodukan"
+        },
+        {
+          "title": "BRACKET",
+          "brand": "TATA",
+          "part_number": "543847608215",
+          "price": 14.4,
+          "mrp": 15.0,
+          "url": "https://autodukan.com/product/tata--bracket-------------------------------------543847608215-532376",
+          "origin": null,
+          "part_class": null,
+          "match": "related",
+          "offers": [],
+          "best_offer": null,
+          "fitment": "verified",
+          "fitment_basis": "AutoDukan verified vehicle catalog for Tata Nexon 2023 1.2L Revotron",
+          "available": true,
+          "notes": [
+            "category-card data only; detail page not opened"
+          ],
+          "relevance": "ACCESSORY",
+          "relevance_score": 0.75,
+          "relevance_reason": "Minor hardware/accessory (bracket) related to component.",
+          "product_type": "accessory",
+          "vendor": "autodukan"
+        },
+        {
+          "title": "ENGINE FUSE BOX MOUNTING BRACKET-03",
+          "brand": "TATA",
+          "part_number": "542754508205",
+          "price": 21.12,
+          "mrp": 22.0,
+          "url": "https://autodukan.com/product/engine-fuse-box-mounting-bracket03-1597400",
+          "origin": null,
+          "part_class": null,
+          "match": "related",
+          "offers": [],
+          "best_offer": null,
+          "fitment": "verified",
+          "fitment_basis": "AutoDukan verified vehicle catalog for Tata Nexon 2023 1.2L Revotron",
+          "available": true,
+          "notes": [
+            "category-card data only; detail page not opened"
+          ],
+          "relevance": "ACCESSORY",
+          "relevance_score": 0.75,
+          "relevance_reason": "Minor hardware/accessory (mounting) related to component.",
+          "product_type": "accessory",
+          "vendor": "autodukan"
+        },
+        {
+          "title": "BRACKET,FUEL PIPE CLAMP MTG",
+          "brand": "TATA",
+          "part_number": "544247608224",
+          "price": 33.6,
+          "mrp": 35.0,
+          "url": "https://autodukan.com/product/tata-bracketfuel-pipe-clamp-mtg-544247608224-533872",
+          "origin": null,
+          "part_class": null,
+          "match": "related",
+          "offers": [],
+          "best_offer": null,
+          "fitment": "verified",
+          "fitment_basis": "AutoDukan verified vehicle catalog for Tata Nexon 2023 1.2L Revotron",
+          "available": true,
+          "notes": [
+            "category-card data only; detail page not opened"
+          ],
+          "relevance": "ACCESSORY",
+          "relevance_score": 0.75,
+          "relevance_reason": "Minor hardware/accessory (bracket) related to component.",
+          "product_type": "accessory",
+          "vendor": "autodukan"
+        },
+        {
+          "title": "BRACKET,FUEL PIPE CLAMP MTG",
+          "brand": "TATA",
+          "part_number": "543847608212",
+          "price": 36.48,
+          "mrp": 38.0,
+          "url": "https://autodukan.com/product/tata--bracketfuel-pipe-clamp-mtg-----------------543847608212-532375",
+          "origin": null,
+          "part_class": null,
+          "match": "related",
+          "offers": [],
+          "best_offer": null,
+          "fitment": "verified",
+          "fitment_basis": "AutoDukan verified vehicle catalog for Tata Nexon 2023 1.2L Revotron",
+          "available": true,
+          "notes": [
+            "category-card data only; detail page not opened"
+          ],
+          "relevance": "ACCESSORY",
+          "relevance_score": 0.75,
+          "relevance_reason": "Minor hardware/accessory (bracket) related to component.",
+          "product_type": "accessory",
+          "vendor": "autodukan"
+        }
+      ]
+    },
+    {
+      "test_id": 3,
+      "query": "Maruti Swift brake pad",
+      "vehicle": "Maruti Swift 2020 1.2L VXI / PETROL",
+      "part": "Brake Pad",
+      "cache_status": "MISS (forced uncached)",
+      "first_result_time": "2026-11-17 13:08:21",
+      "first_supplier": "boodmo",
+      "total_duration_seconds": 18.67,
+      "total_products_count": 12,
+      "rejected_incompatible_count": 0,
+      "vendor_outcomes": [
+        {
+          "vendor": "boodmo",
+          "status": "failed",
+          "count": 0,
+          "elapsed": 6.17
+        },
+        {
+          "vendor": "autodukan",
+          "status": "ok",
+          "count": 12,
+          "elapsed": 18.59
+        }
+      ],
+      "sample_listings": [
+        {
+          "title": "FRONT BRAKE PAD",
+          "brand": "SKF",
+          "part_number": "VKAD5907N",
+          "price": 850.0,
+          "mrp": 1000.0,
+          "url": "https://autodukan.com/product/1890351",
+          "origin": null,
+          "part_class": null,
+          "match": "exact",
+          "offers": [],
+          "best_offer": null,
+          "fitment": "verified",
+          "fitment_basis": "AutoDukan verified vehicle catalog for MARUTI SWIFT",
+          "available": true,
+          "notes": [],
+          "relevance": "EXACT_MATCH",
+          "relevance_score": 0.98,
+          "relevance_reason": "Exact match for requested component: 'pad'.",
+          "product_type": "component",
+          "vendor": "autodukan"
+        },
+        {
+          "title": "Front Brake Pad Set",
+          "brand": "FERODO",
+          "part_number": "FDB5311QS",
+          "price": 885.6,
+          "mrp": 1107.0,
+          "url": "https://autodukan.com/product/front-brake-pad-set-1346098",
+          "origin": null,
+          "part_class": null,
+          "match": "exact",
+          "offers": [],
+          "best_offer": null,
+          "fitment": "verified",
+          "fitment_basis": "AutoDukan verified vehicle catalog for MARUTI SWIFT",
+          "available": true,
+          "notes": [],
+          "relevance": "EXACT_MATCH",
+          "relevance_score": 0.98,
+          "relevance_reason": "Exact match for requested component: 'pad'.",
+          "product_type": "component",
+          "vendor": "autodukan"
+        },
+        {
+          "title": "Front Brake Pad Set",
+          "brand": "Roulunds Braking",
+          "part_number": "51295081i10",
+          "price": 926.25,
+          "mrp": 1235.0,
+          "url": "https://autodukan.com/product/front-brake-pad-set-1521303",
+          "origin": null,
+          "part_class": null,
+          "match": "exact",
+          "offers": [],
+          "best_offer": null,
+          "fitment": "verified",
+          "fitment_basis": "AutoDukan verified vehicle catalog for MARUTI SWIFT",
+          "available": true,
+          "notes": [],
+          "relevance": "EXACT_MATCH",
+          "relevance_score": 0.98,
+          "relevance_reason": "Exact match for requested component: 'pad'.",
+          "product_type": "component",
+          "vendor": "autodukan"
+        },
+        {
+          "title": "BRAKE PAD",
+          "brand": "Bosch",
+          "part_number": "F002H24190",
+          "price": 937.5,
+          "mrp": 1250.0,
+          "url": "https://autodukan.com/product/front-brake-pad-set-1365289",
+          "origin": null,
+          "part_class": null,
+          "match": "exact",
+          "offers": [],
+          "best_offer": null,
+          "fitment": "verified",
+          "fitment_basis": "AutoDukan verified vehicle catalog for MARUTI SWIFT",
+          "available": true,
+          "notes": [],
+          "relevance": "EXACT_MATCH",
+          "relevance_score": 0.98,
+          "relevance_reason": "Exact match for requested component: 'pad'.",
+          "product_type": "component",
+          "vendor": "autodukan"
+        },
+        {
+          "title": "BRAKE PADS FRONT",
+          "brand": "Bosch",
+          "part_number": "F002H241908F8",
+          "price": 937.5,
+          "mrp": 1250.0,
+          "url": "https://autodukan.com/product/2054739",
+          "origin": null,
+          "part_class": null,
+          "match": "exact",
+          "offers": [],
+          "best_offer": null,
+          "fitment": "verified",
+          "fitment_basis": "AutoDukan verified vehicle catalog for MARUTI SWIFT",
+          "available": true,
+          "notes": [],
+          "relevance": "EXACT_MATCH",
+          "relevance_score": 0.98,
+          "relevance_reason": "Exact match for requested component: 'pad'.",
+          "product_type": "component",
+          "vendor": "autodukan"
+        }
+      ]
+    },
+    {
+      "test_id": 4,
+      "query": "Hyundai i20 air filter",
+      "vehicle": "Hyundai i20 2021 1.2L Kappa",
+      "part": "Air Filter",
+      "cache_status": "MISS (forced uncached)",
+      "first_result_time": "2026-11-17 13:08:39",
+      "first_supplier": "boodmo",
+      "total_duration_seconds": 13.53,
+      "total_products_count": 2,
+      "rejected_incompatible_count": 0,
+      "vendor_outcomes": [
+        {
+          "vendor": "boodmo",
+          "status": "failed",
+          "count": 0,
+          "elapsed": 5.75
+        },
+        {
+          "vendor": "autodukan",
+          "status": "ok",
+          "count": 2,
+          "elapsed": 13.51
+        }
+      ],
+      "sample_listings": [
+        {
+          "title": "PACKING-OIL FILLER CAP",
+          "brand": "HYUNDAI",
+          "part_number": "2650222600",
+          "price": 157.78,
+          "mrp": 161.0,
+          "url": "https://autodukan.com/product/mobis-hyundai-kia-crankshaft-seal-packingoil-filler-cap-2650222600-326914",
+          "origin": null,
+          "part_class": null,
+          "match": "related",
+          "offers": [],
+          "best_offer": null,
+          "fitment": "verified",
+          "fitment_basis": "AutoDukan verified vehicle catalog for Hyundai i20 2021 1.2L Kappa",
+          "available": true,
+          "notes": [
+            "category-card data only; detail page not opened"
+          ],
+          "relevance": "ACCESSORY",
+          "relevance_score": 0.95,
+          "relevance_reason": "Component/accessory (cap) of the requested air filter, not a complete assembly.",
+          "product_type": "accessory",
+          "vendor": "autodukan"
+        },
+        {
+          "title": "CAP-OIL FILLER",
+          "brand": "HYUNDAI",
+          "part_number": "265102M000",
+          "price": 485.1,
+          "mrp": 495.0,
+          "url": "https://autodukan.com/product/1757358",
+          "origin": null,
+          "part_class": null,
+          "match": "related",
+          "offers": [],
+          "best_offer": null,
+          "fitment": "verified",
+          "fitment_basis": "AutoDukan verified vehicle catalog for Hyundai i20 2021 1.2L Kappa",
+          "available": true,
+          "notes": [
+            "category-card data only; detail page not opened"
+          ],
+          "relevance": "ACCESSORY",
+          "relevance_score": 0.95,
+          "relevance_reason": "Component/accessory (cap) of the requested air filter, not a complete assembly.",
+          "product_type": "accessory",
+          "vendor": "autodukan"
+        }
+      ]
+    },
+    {
+      "test_id": 5,
+      "query": "Bugatti Chiron brake pad",
+      "vehicle": "Bugatti Chiron 2020 8.0L W16",
+      "part": "Brake Pad",
+      "cache_status": "MISS (forced uncached)",
+      "first_result_time": "2026-11-17 13:08:49",
+      "first_supplier": "boodmo",
+      "total_duration_seconds": 18.17,
+      "total_products_count": 0,
+      "rejected_incompatible_count": 0,
+      "vendor_outcomes": [
+        {
+          "vendor": "boodmo",
+          "status": "failed",
+          "count": 0,
+          "elapsed": 2.41
+        },
+        {
+          "vendor": "autodukan",
+          "status": "no_results",
+          "count": 0,
+          "elapsed": 18.16
+        }
+      ],
+      "sample_listings": []
+    }
+  ],
+  "memory_profile": {
+    "idle": {
+      "rss_mb": 431.72,
+      "pss_mb": 306.24,
+      "private_anon_mb": 187.01,
+      "process_count": 5,
+      "cgroup_current_mb": 13309.75,
+      "cgroup_peak_mb": null,
+      "cgroup_source": "/sys/fs/cgroup/user.slice/memory.current"
+    },
+    "post_tests": {
+      "rss_mb": 584.12,
+      "pss_mb": 428.97,
+      "private_anon_mb": 275.64,
+      "process_count": 5,
+      "cgroup_current_mb": 13150.9,
+      "cgroup_peak_mb": null,
+      "cgroup_source": "/sys/fs/cgroup/user.slice/memory.current"
+    },
+    "intermediate_snapshots": [
+      {
+        "rss_mb": 562.83,
+        "pss_mb": 407.82,
+        "private_anon_mb": 254.59,
+        "process_count": 5,
+        "cgroup_current_mb": 13089.8,
+        "cgroup_peak_mb": null,
+        "cgroup_source": "/sys/fs/cgroup/user.slice/memory.current"
+      },
+      {
+        "rss_mb": 564.09,
+        "pss_mb": 409.08,
+        "private_anon_mb": 255.85,
+        "process_count": 5,
+        "cgroup_current_mb": 13078.32,
+        "cgroup_peak_mb": null,
+        "cgroup_source": "/sys/fs/cgroup/user.slice/memory.current"
+      },
+      {
+        "rss_mb": 579.74,
+        "pss_mb": 424.6,
+        "private_anon_mb": 271.38,
+        "process_count": 5,
+        "cgroup_current_mb": 13056.48,
+        "cgroup_peak_mb": null,
+        "cgroup_source": "/sys/fs/cgroup/user.slice/memory.current"
+      },
+      {
+        "rss_mb": 588.66,
+        "pss_mb": 433.51,
+        "private_anon_mb": 280.24,
+        "process_count": 5,
+        "cgroup_current_mb": 13064.04,
+        "cgroup_peak_mb": null,
+        "cgroup_source": "/sys/fs/cgroup/user.slice/memory.current"
+      },
+      {
+        "rss_mb": 584.12,
+        "pss_mb": 428.97,
+        "private_anon_mb": 275.64,
+        "process_count": 5,
+        "cgroup_current_mb": 13150.94,
+        "cgroup_peak_mb": null,
+        "cgroup_source": "/sys/fs/cgroup/user.slice/memory.current"
+      }
+    ]
+  }
+}

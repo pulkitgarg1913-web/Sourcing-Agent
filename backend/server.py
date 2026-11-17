@@ -268,11 +268,15 @@ def instrument_session(thread_id: str, session: Session):
                     # Classify and intelligently rank listings before publishing to UI
                     from parts_agent import relevance
                     query_text = vendor_profile.hints.get("raw_request") or vendor_profile.part or ""
+                    v_maker = vendor_profile.maker or vendor_profile.hints.get("make") or ""
+                    v_model = vendor_profile.model or vendor_profile.hints.get("model") or ""
                     listings_dict = relevance.classify_listings(
                         listings_dict,
                         query=query_text,
                         requested_part=vendor_profile.part or "",
-                        category=vendor_profile.category or ""
+                        category=vendor_profile.category or "",
+                        target_maker=v_maker,
+                        target_model=v_model,
                     )
                     listings_dict = relevance.rank_listings(listings_dict, price_order="asc")
 

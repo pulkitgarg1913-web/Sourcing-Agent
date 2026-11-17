@@ -264,6 +264,29 @@ def save_cached_search(maker: Optional[str], model: Optional[str], year: Optiona
         log.warning("Could not save to cache: %s", exc)
 
 
+def purge_cached_search(maker: Optional[str] = None, model: Optional[str] = None,
+                        year: Optional[str] = None, variant: Optional[str] = None,
+                        part: Optional[str] = None) -> int:
+    """Purge specific or all non-demo cached search records."""
+    try:
+        with _get_db() as conn:
+            if not any((maker, model, year, variant, part)):
+                cursor = conn.execute("DELETE FROM search_cache WHERE data NOT LIKE '%\"is_demo\": true%' AND data NOT LIKE '%\"is_demo\":true%'")
+                conn.commit()
+                return cursor.rowcount
+            key = make_cache_key(maker, model, year, variant, part)
+            prefix = f"{normalize_term(maker)}:{normalize_term(model)}:" if maker and model else ""
+            if prefix:
+                cursor = conn.execute("DELETE FROM search_cache WHERE (key LIKE ? OR key = ?) AND data NOT LIKE '%\"is_demo\": true%'", (f"{prefix}%", key))
+            else:
+                cursor = conn.execute("DELETE FROM search_cache WHERE key = ? AND data NOT LIKE '%\"is_demo\": true%'", (key,))
+            conn.commit()
+            return cursor.rowcount
+    except Exception as exc:
+        log.warning("Could not purge search cache: %s", exc)
+        return 0
+
+
 def get_cached_url(vendor: str, vehicle_key: str, category: str) -> Optional[str]:
     """Get direct category URL to bypass vehicle dropdown navigation."""
     try:

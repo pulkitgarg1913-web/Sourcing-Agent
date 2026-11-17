@@ -62,7 +62,7 @@ class Session:
 
 
 SESSIONS: dict[str, Session] = {}
-MAX_CONCURRENT_SEARCHES = int(os.environ.get("MAX_CONCURRENT_SEARCHES", "2"))
+MAX_CONCURRENT_SEARCHES = int(os.environ.get("MAX_CONCURRENT_SEARCHES", "1"))
 _SEARCH_SEMAPHORE: Optional[asyncio.Semaphore] = None
 
 
@@ -70,6 +70,14 @@ def get_search_semaphore() -> asyncio.Semaphore:
     global _SEARCH_SEMAPHORE
     if _SEARCH_SEMAPHORE is None:
         _SEARCH_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_SEARCHES)
+    return _SEARCH_SEMAPHORE
+
+
+def reset_search_semaphore(new_limit: Optional[int] = None) -> asyncio.Semaphore:
+    global _SEARCH_SEMAPHORE, MAX_CONCURRENT_SEARCHES
+    if new_limit is not None:
+        MAX_CONCURRENT_SEARCHES = new_limit
+    _SEARCH_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_SEARCHES)
     return _SEARCH_SEMAPHORE
 
 
@@ -215,6 +223,25 @@ def _profiles_from_state(state: State) -> dict[str, VehicleProfile]:
         if not p.part and boodmo_p.part:
             p.part = boodmo_p.part
         profiles[vendor] = p
+
+    # Ensure bidirectional synchronization so vehicle identity is never lost
+    common_maker = boodmo_p.maker or profiles["autodukan"].maker or shared_hints.get("make")
+    common_model = boodmo_p.model or profiles["autodukan"].model or shared_hints.get("model")
+    common_year = boodmo_p.year or profiles["autodukan"].year or shared_hints.get("year")
+    common_part = boodmo_p.part or profiles["autodukan"].part or legacy.part
+    fallback_flag = bool(boodmo_p.hints.get("category_fallback") or profiles["autodukan"].hints.get("category_fallback"))
+    for p in profiles.values():
+        if not p.maker and common_maker:
+            p.maker = common_maker
+        if not p.model and common_model:
+            p.model = common_model
+        if not p.year and common_year:
+            p.year = common_year
+        if not p.part and common_part:
+            p.part = common_part
+        if fallback_flag:
+            p.hints["category_fallback"] = True
+            p.hints["use_search_fallback"] = True
     return profiles
 
 
@@ -466,6 +493,26 @@ async def interpret(state: State, config) -> State:
         return _resolved(profiles, turn, resolved_part)
 
     options = p.get("options") or []
+    if p.get("field") == "category":
+        ans_clean = ans.lower().strip()
+        is_none_or_fallback = (
+            any(phrase in ans_clean for phrase in ("none of these", "none", "other", "part name", "search by part", "search directly", "neither", "nahin", "skip"))
+            or bool(DONT_KNOW.search(ans))
+        )
+        if is_none_or_fallback:
+            session = _session(config)
+            for vendor_name, vendor_profile in profiles.items():
+                vendor_profile.hints["category_fallback"] = True
+                vendor_profile.hints["use_search_fallback"] = True
+                vendor_profile.hints["category_resolved"] = True
+                adapter = session.adapters.get(vendor_name)
+                if adapter and hasattr(adapter, "choose_category"):
+                    adapter.choose_category(vendor_profile, "None of these")
+                elif adapter:
+                    setattr(adapter, "_using_search_fallback", True)
+                    setattr(adapter, "_category_confirmed", True)
+            return _resolved(profiles, turn, "Search by part name instead")
+
     if DONT_KNOW.search(ans):
         if p["field"] == "variant_attr":
             profile.variant_filters[p["attr"]] = variants.SKIP
@@ -520,8 +567,11 @@ def _apply(profile: VehicleProfile, need: dict, value: str, config,
            profiles: dict[str, VehicleProfile], vendor: str):
     f = need["field"]
     if f == "category":
-        if vendor == "boodmo":
-            _session(config).boodmo_adapter.choose_category(profile, value)
+        profile.hints["category_resolved"] = True
+        session = _session(config)
+        adapter = session.adapters.get(vendor)
+        if adapter and hasattr(adapter, "choose_category"):
+            adapter.choose_category(profile, value)
         else:
             profile.category = value
     elif f in ("maker", "model", "year"):
@@ -582,7 +632,7 @@ async def collect(state: State, config) -> State:
     from . import cache_manager, relevance
 
     # Fast Cache Check (Choice 1 + Strategy 1)
-    cached_outcomes = cache_manager.get_cached_search(
+    cached_outcomes = None if (state.get("force_refresh") or state.get("bypass_cache")) else cache_manager.get_cached_search(
         maker=profile.maker,
         model=profile.model,
         year=profile.year,
@@ -610,16 +660,26 @@ async def collect(state: State, config) -> State:
             for outcome in vendor_outcomes
             for listing in outcome.get("listings", [])
         ]
+        target_maker = profile.maker or profile.hints.get("make") or ""
+        target_model = profile.model or profile.hints.get("model") or ""
         all_listings = relevance.classify_listings(
             all_listings,
             query=state.get("request", ""),
-            requested_part=profile.part or ""
+            requested_part=profile.part or "",
+            target_maker=target_maker,
+            target_model=target_model,
         )
         ranked = relevance.rank_listings(all_listings)
         for vo in vendor_outcomes:
             vo_listings = vo.get("listings") or []
             vo["listings"] = relevance.rank_listings(
-                relevance.classify_listings(vo_listings, query=state.get("request", ""), requested_part=profile.part or ""),
+                relevance.classify_listings(
+                    vo_listings,
+                    query=state.get("request", ""),
+                    requested_part=profile.part or "",
+                    target_maker=target_maker,
+                    target_model=target_model,
+                ),
                 price_order="asc"
             )
 
@@ -647,16 +707,26 @@ async def collect(state: State, config) -> State:
         except Exception as e:
             elapsed = round(time.time() - t0, 2)
             log.exception("%s collection failed", adapter.name)
+            err_str = str(e).lower()
+            if any(k in err_str for k in ("challenge", "cloudflare", "turnstile", "verify you are human")):
+                status = "challenge_detected"
+                msg = f"{adapter.name.title()} bot-protection challenge encountered; automated search safely skipped."
+            elif any(k in err_str for k in ("blocked", "denied", "403", "429")):
+                status = "blocked"
+                msg = f"{adapter.name.title()} access blocked (403/429); automated search safely skipped."
+            else:
+                status = "failed"
+                msg = f"{adapter.name} search failed: {e}"
             return SearchOutcome(
                 vendor=adapter.name,
-                status="failed",
+                status=status,
                 vehicle_label=" ".join(x for x in (
                     vendor_profile.maker, vendor_profile.model, vendor_profile.year,
                     vendor_profile.variant,
                 ) if x),
                 listings=[],
-                source_url=getattr(adapter, "last_search_url", None) or getattr(adapter, "page", None) and getattr(adapter.page, "url", ""),
-                message=f"{adapter.name} search failed: {e}",
+                source_url=getattr(adapter, "last_search_url", None) or (getattr(adapter, "page", None) and getattr(adapter.page, "url", "")),
+                message=msg,
                 elapsed_seconds=elapsed,
             )
 
@@ -751,11 +821,15 @@ async def collect(state: State, config) -> State:
     ]
     from . import relevance
 
-    # Classify all extracted listings against customer request
+    # Classify all extracted listings against customer request with strict vehicle validation
+    target_maker = profile.maker or profile.hints.get("make") or ""
+    target_model = profile.model or profile.hints.get("model") or ""
     all_listings = relevance.classify_listings(
         all_listings,
         query=state.get("request", ""),
-        requested_part=profile.part or ""
+        requested_part=profile.part or "",
+        target_maker=target_maker,
+        target_model=target_model,
     )
     # Rank listings so primary matches appear first, followed by components, then accessories
     all_listings = relevance.rank_listings(all_listings, price_order="asc")
@@ -764,7 +838,13 @@ async def collect(state: State, config) -> State:
     for vo in vendor_outcomes:
         vo_listings = vo.get("listings") or []
         vo["listings"] = relevance.rank_listings(
-            relevance.classify_listings(vo_listings, query=state.get("request", ""), requested_part=profile.part or ""),
+            relevance.classify_listings(
+                vo_listings,
+                query=state.get("request", ""),
+                requested_part=profile.part or "",
+                target_maker=target_maker,
+                target_model=target_model,
+            ),
             price_order="asc"
         )
 
