@@ -680,7 +680,8 @@ async def collect(state: State, config) -> State:
                     for l in vo_listings
                 ],
                 query=state.get("request", ""),
-                requested_part=profile.part or "",
+                requested_part=profile.part or profile.category or profile.hints.get("part") or "",
+                category=profile.category or profile.hints.get("category") or "",
                 target_maker=target_maker,
                 target_model=target_model,
                 target_year=target_year,
@@ -853,7 +854,8 @@ async def collect(state: State, config) -> State:
                 for l in vo_listings
             ],
             query=state.get("request", ""),
-            requested_part=profile.part or "",
+            requested_part=profile.part or profile.category or profile.hints.get("part") or "",
+            category=profile.category or profile.hints.get("category") or "",
             target_maker=target_maker,
             target_model=target_model,
             target_year=target_year,

@@ -31,7 +31,7 @@ export default function SupplierMonitor({
       {/* Supplier Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         {suppliers.map((s) => {
-          const isCompleted = s.status === "Completed"
+          const isCompleted = s.status === "Completed" || s.status === "No Results"
           const isFailed = s.status === "Failed"
           const isBlocked = s.status === "Blocked"
           const isInProgress =
@@ -53,6 +53,7 @@ export default function SupplierMonitor({
             "Searching products": "bg-indigo-50 text-indigo-700 border-indigo-200",
             "Extracting listings": "bg-purple-50 text-purple-700 border-purple-200",
             Completed: "bg-emerald-50 text-emerald-700 border-emerald-200",
+            "No Results": "bg-slate-100 text-slate-600 border-slate-200",
             Failed: "bg-rose-50 text-rose-700 border-rose-200",
             Blocked: "bg-amber-50 text-amber-700 border-amber-200",
           }
@@ -100,7 +101,13 @@ export default function SupplierMonitor({
                     {isInProgress && (
                       <Loader2 className="w-2.5 h-2.5 animate-spin" />
                     )}
-                    {isCompleted && <CheckCircle2 className="w-2.5 h-2.5" />}
+                    {isCompleted && (
+                      s.status === "No Results" ? (
+                        <Package className="w-2.5 h-2.5 text-slate-400" />
+                      ) : (
+                        <CheckCircle2 className="w-2.5 h-2.5" />
+                      )
+                    )}
                     {(isFailed || isBlocked) && <AlertCircle className="w-2.5 h-2.5" />}
                     {s.status}
                   </span>
@@ -112,7 +119,9 @@ export default function SupplierMonitor({
                     <div
                       className={`h-full rounded-full transition-all duration-300 ${
                         isCompleted
-                          ? "bg-emerald-500"
+                          ? s.status === "No Results"
+                            ? "bg-slate-400"
+                            : "bg-emerald-500"
                           : isFailed
                           ? "bg-rose-500"
                           : "bg-blue-600"

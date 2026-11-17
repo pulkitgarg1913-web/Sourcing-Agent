@@ -257,5 +257,138 @@ class TestResultsTableSync(unittest.TestCase):
         self.assertEqual(status, "incompatible")
 
 
+    def test_hyundai_creta_headlights_boodmo_2_autodukan_0_flow(self):
+        """Test Hyundai Creta Headlights where Boodmo returns 2 products and AutoDukan returns 0.
+
+        Verifies:
+        1. Boodmo returns 2 products, AutoDukan returns 0.
+        2. Graph outcomes preserve Boodmo 2 products and AutoDukan 0 products.
+        3. publish_completed_outcomes emits Boodmo 'Completed' (2 products) and AutoDukan 'No Results' (0 products).
+        4. Cache saving and retrieval preserves both outcomes without losing Boodmo's products.
+        """
+        boodmo_listings = [
+            Listing(
+                title="Hyundai Creta LED Headlight Unit RH",
+                brand="Hyundai (OEM)",
+                part_number="92102-M1000",
+                price=5800.0,
+                mrp=6500.0,
+                url="https://boodmo.com/catalog/part-headlight_rh-92102M1000/",
+                fitment="verified",
+                fitment_basis="Boodmo fitment filter: Hyundai Creta 2026 1.5L SX Premium MT",
+                vendor="boodmo",
+                supplier="Boodmo",
+                supplier_name="Boodmo",
+                seller="Authorized Supplier Hub",
+                dispatch="24–48 hours",
+                available=True,
+            ),
+            Listing(
+                title="Hyundai Creta LED Headlight Unit LH",
+                brand="Hyundai (OEM)",
+                part_number="92101-M1000",
+                price=5800.0,
+                mrp=6500.0,
+                url="https://boodmo.com/catalog/part-headlight_lh-92101M1000/",
+                fitment="verified",
+                fitment_basis="Boodmo fitment filter: Hyundai Creta 2026 1.5L SX Premium MT",
+                vendor="boodmo",
+                supplier="Boodmo",
+                supplier_name="Boodmo",
+                seller="Authorized Supplier Hub",
+                dispatch="24–48 hours",
+                available=True,
+            ),
+        ]
+
+        boodmo_outcome = SearchOutcome(
+            vendor="boodmo",
+            status="ok",
+            vehicle_label="Hyundai Creta 2026 1.5L SX Premium MT",
+            listings=[l.to_dict() for l in boodmo_listings],
+            source_url="https://boodmo.com/catalog/4647-headlight/",
+            message="Boodmo search found 2 listings",
+            elapsed_seconds=12.7,
+        )
+
+        autodukan_outcome = SearchOutcome(
+            vendor="autodukan",
+            status="no_results",
+            vehicle_label="Hyundai Creta 2026 1.5L SX Premium MT",
+            listings=[],
+            source_url="https://autodukan.com/category/headlight",
+            message="AutoDukan search found 0 listings",
+            elapsed_seconds=13.5,
+        )
+
+        profile = VehicleProfile(
+            maker="Hyundai",
+            model="Creta",
+            year="2026",
+            variant="1.5L SX Premium MT",
+            part="Headlights",
+            category="Headlight",
+        )
+
+        state = {
+            "request": "Hyundai Creta 2026 1.5L SX Premium MT Diesel BS6.2 Headlights",
+            "profile": profile.to_dict(),
+            "outcome": {
+                "status": "ok",
+                "vehicle_label": "Hyundai Creta 2026 1.5L SX Premium MT",
+                "listings": [l.to_dict() for l in boodmo_listings],
+                "vendor_outcomes": [boodmo_outcome.to_dict() if hasattr(boodmo_outcome, "to_dict") else vars(boodmo_outcome),
+                                    autodukan_outcome.to_dict() if hasattr(autodukan_outcome, "to_dict") else vars(autodukan_outcome)],
+            }
+        }
+
+        # 1. Test publish_completed_outcomes
+        captured_events = []
+        orig_publish = sse_manager.publish
+        try:
+            sse_manager.publish = lambda tid, ev: captured_events.append(ev)
+            publish_completed_outcomes("test-creta-headlights", state)
+
+            adapter_events = [e for e in captured_events if e.get("type") == "adapter_completed"]
+            self.assertEqual(len(adapter_events), 2)
+
+            boodmo_ev = next(e for e in adapter_events if e["vendor"] == "boodmo")
+            self.assertEqual(boodmo_ev["status"], "Completed")
+            self.assertEqual(boodmo_ev["products_found"], 2)
+            self.assertEqual(len(boodmo_ev["results"]), 2)
+
+            autodukan_ev = next(e for e in adapter_events if e["vendor"] == "autodukan")
+            self.assertEqual(autodukan_ev["status"], "No Results")
+            self.assertEqual(autodukan_ev["products_found"], 0)
+            self.assertEqual(len(autodukan_ev["results"]), 0)
+        finally:
+            sse_manager.publish = orig_publish
+
+        # 2. Test cache save and retrieve
+        cache_manager.save_cached_search(
+            maker="Hyundai",
+            model="Creta",
+            year="2026",
+            variant="1.5L SX Premium MT",
+            part="Headlights",
+            outcomes=state["outcome"]["vendor_outcomes"],
+            ttl_hours=1.0,
+        )
+
+        cached_outcomes = cache_manager.get_cached_search(
+            maker="Hyundai",
+            model="Creta",
+            year="2026",
+            variant="1.5L SX Premium MT",
+            part="Headlights",
+        )
+        self.assertIsNotNone(cached_outcomes)
+        self.assertEqual(len(cached_outcomes), 2)
+        cached_boodmo = next(vo for vo in cached_outcomes if vo["vendor"] == "boodmo")
+        cached_autodukan = next(vo for vo in cached_outcomes if vo["vendor"] == "autodukan")
+        self.assertEqual(len(cached_boodmo["listings"]), 2)
+        self.assertEqual(len(cached_autodukan["listings"]), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

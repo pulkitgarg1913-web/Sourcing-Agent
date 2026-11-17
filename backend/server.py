@@ -284,8 +284,8 @@ def instrument_session(thread_id: str, session: Session):
                     listings_dict = relevance.classify_listings(
                         listings_dict,
                         query=query_text,
-                        requested_part=vendor_profile.part or "",
-                        category=vendor_profile.category or "",
+                        requested_part=vendor_profile.part or vendor_profile.category or vendor_profile.hints.get("part") or "",
+                        category=vendor_profile.category or vendor_profile.hints.get("category") or "",
                         target_maker=v_maker,
                         target_model=v_model,
                         target_year=v_year,
@@ -327,13 +327,15 @@ def instrument_session(thread_id: str, session: Session):
                             },
                         )
                     else:
+                        is_no_results = len(listings_dict) == 0
+                        status_str = "No Results" if is_no_results else "Completed"
                         sse_manager.publish(
                             thread_id,
                             {
                                 "type": "adapter_completed",
                                 "supplier": s_title,
                                 "vendor": v_name,
-                                "status": "Completed",
+                                "status": status_str,
                                 "products_found": len(listings_dict),
                                 "results": listings_dict,
                                 "source_url": outcome.source_url,
@@ -347,7 +349,7 @@ def instrument_session(thread_id: str, session: Session):
                                 "type": "supplier_result",
                                 "supplier": s_title,
                                 "vendor": v_name,
-                                "status": "ok",
+                                "status": "no_results" if is_no_results else "ok",
                                 "product_count": len(listings_dict),
                                 "products_found": len(listings_dict),
                                 "results": listings_dict,
@@ -556,13 +558,22 @@ def publish_completed_outcomes(thread_id: str, state: dict):
                 item["dispatch"] = best_off.get("dispatch") or "24–48 hours"
             listings_dict.append(item)
         source_url = vo.get("source_url") or ("https://boodmo.com" if v_name == "boodmo" else "https://autodukan.com")
+        is_no_results = len(listings_dict) == 0
+        vo_status = vo.get("status")
+        if vo_status in ("failed", "blocked", "timeout"):
+            status_label = "Failed" if vo_status == "failed" else "Blocked" if vo_status == "blocked" else "Timeout"
+        elif is_no_results:
+            status_label = "No Results"
+        else:
+            status_label = "Completed"
+
         sse_manager.publish(
             thread_id,
             {
                 "type": "adapter_completed",
                 "supplier": s_title,
                 "vendor": v_name,
-                "status": "Completed",
+                "status": status_label,
                 "products_found": len(listings_dict),
                 "results": listings_dict,
                 "source_url": source_url,

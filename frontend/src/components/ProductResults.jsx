@@ -25,6 +25,8 @@ import { formatRupees } from "../lib/utils"
 
 export default function ProductResults({
   listings = [],
+  boodmoListings = null,
+  autodukanListings = null,
   suppliers = [],
   activeFilter = "all",
   onSelectFilter,
@@ -42,9 +44,9 @@ export default function ProductResults({
       if (item.relevance === "IRRELEVANT") return false
 
       const rel = item.relevance || "EXACT_MATCH"
-      if (relevanceFilter === "exact" && rel !== "EXACT_MATCH") return false
-      if (relevanceFilter === "close" && rel !== "CLOSE_MATCH") return false
-      if (relevanceFilter === "component" && rel !== "COMPONENT") return false
+      if (relevanceFilter === "exact" && rel !== "EXACT_MATCH" && rel !== "EXACT_PART_MATCH") return false
+      if (relevanceFilter === "close" && rel !== "CLOSE_MATCH" && rel !== "PART_ALIAS_MATCH") return false
+      if (relevanceFilter === "component" && rel !== "COMPONENT" && rel !== "RELATED_COMPONENT") return false
       if (relevanceFilter === "accessory" && rel !== "ACCESSORY") return false
 
       if (stockFilter === "in_stock" && item.available !== true) return false
@@ -67,8 +69,11 @@ export default function ProductResults({
   const sortListings = (items) => {
     const list = [...items]
     const tierOrder = {
+      EXACT_PART_MATCH: 1,
       EXACT_MATCH: 1,
+      PART_ALIAS_MATCH: 2,
       CLOSE_MATCH: 2,
+      RELATED_COMPONENT: 3,
       COMPONENT: 3,
       ACCESSORY: 4,
       NEEDS_REVIEW: 5,
@@ -113,14 +118,14 @@ export default function ProductResults({
     return v.includes("autodukan") || (l.url && l.url.toLowerCase().includes("autodukan"))
   }
 
-  // Separate listings by adapter with robust supplier fallback
+  // Separate listings by adapter with independent state support and robust supplier fallback
   const boodmoRaw = useMemo(
-    () => listings.filter(isBoodmo),
-    [listings]
+    () => (boodmoListings !== null ? boodmoListings : listings.filter(isBoodmo)),
+    [boodmoListings, listings]
   )
   const autodukanRaw = useMemo(
-    () => listings.filter(isAutoDukan),
-    [listings]
+    () => (autodukanListings !== null ? autodukanListings : listings.filter(isAutoDukan)),
+    [autodukanListings, listings]
   )
 
   const boodmoFiltered = useMemo(
@@ -132,15 +137,16 @@ export default function ProductResults({
     [autodukanRaw, relevanceFilter, stockFilter, searchQuery, sortOption]
   )
 
-  // Supplier counts
+  // Supplier counts computed directly from separated adapter items
   const supplierCounts = useMemo(() => {
-    const valid = listings.filter((l) => l.relevance !== "IRRELEVANT")
+    const validBoodmo = boodmoRaw.filter((l) => l.relevance !== "IRRELEVANT")
+    const validAutoDukan = autodukanRaw.filter((l) => l.relevance !== "IRRELEVANT")
     return {
-      all: valid.length,
-      boodmo: valid.filter(isBoodmo).length,
-      autodukan: valid.filter(isAutoDukan).length,
+      all: validBoodmo.length + validAutoDukan.length,
+      boodmo: validBoodmo.length,
+      autodukan: validAutoDukan.length,
     }
-  }, [listings])
+  }, [boodmoRaw, autodukanRaw])
 
   // Stock counts
   const stockCounts = useMemo(() => {
@@ -407,7 +413,8 @@ export default function ProductResults({
 
   // Sub-component: A clean, dedicated table for a single supplier adapter
   const SupplierTableSection = ({ vendor, title, badgeColor, items, supplierInfo }) => {
-    const isCompleted = supplierInfo?.status === "Completed"
+    const isCompleted = supplierInfo?.status === "Completed" || supplierInfo?.status === "No Results"
+    const isNoResults = supplierInfo?.status === "No Results" || (isCompleted && items.length === 0)
     const isFailed = supplierInfo?.status === "Failed"
     const isBlocked = supplierInfo?.status === "Blocked"
     const isSearching =
@@ -452,8 +459,8 @@ export default function ProductResults({
 
           <div className="flex items-center gap-2">
             {isCompleted && (
-              <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded">
-                Extraction Complete
+              <span className={`text-[10px] font-semibold ${items.length > 0 ? "text-emerald-700 bg-emerald-50 border-emerald-200" : "text-slate-600 bg-slate-100 border-slate-200"} border px-2 py-0.5 rounded`}>
+                {items.length > 0 ? "Extraction Complete" : "No Results"}
               </span>
             )}
             {isSearching && (
@@ -494,15 +501,15 @@ export default function ProductResults({
             <p className="font-semibold text-slate-600">
               {isSearching
                 ? `${title} is currently searching catalogs...`
-                : isCompleted
-                ? `${title} has no matching verified inventory in stock for this car.`
+                : isCompleted || isNoResults
+                ? "0 products found."
                 : `Ready to search ${title}`}
             </p>
-            <p className="text-[11px] text-slate-400 mt-0.5">
+            <p className="text-[11px] text-slate-500 mt-1">
               {isSearching
                 ? "Results will appear here as soon as extraction finishes."
-                : isCompleted
-                ? "No parts met the verified modification fitment criteria."
+                : isCompleted || isNoResults
+                ? "No matching products found for this vehicle and part. Extraction completed."
                 : "Type a part name or vehicle details in the chat above."}
             </p>
           </div>

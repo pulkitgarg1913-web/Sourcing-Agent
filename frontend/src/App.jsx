@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from "react"
+import React, { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import { MessageSquare, Layers } from "lucide-react"
 import Header from "./components/Header"
 import ConversationPanel from "./components/ConversationPanel"
@@ -92,7 +92,13 @@ export default function App() {
   const [pendingQuestion, setPendingQuestion] = useState(null)
   const [vehicleProfile, setVehicleProfile] = useState(null)
   const [suppliers, setSuppliers] = useState(INITIAL_SUPPLIERS)
-  const [listings, setListings] = useState([])
+  const [boodmoListings, setBoodmoListings] = useState([])
+  const [autodukanListings, setAutodukanListings] = useState([])
+
+  const listings = useMemo(
+    () => [...boodmoListings, ...autodukanListings],
+    [boodmoListings, autodukanListings]
+  )
   const [logs, setLogs] = useState([])
   const [notifications, setNotifications] = useState([])
   const [activeFilter, setActiveFilter] = useState("all")
@@ -203,15 +209,21 @@ export default function App() {
       case "supplier_result":
       case "adapter_completed": {
         const prodCount = event.products_found !== undefined ? event.products_found : (event.product_count || 0)
-        // 1. Update supplier status
+        const isBoodmoVendor = event.vendor === "boodmo" || (event.supplier || "").toLowerCase().includes("boodmo")
+        const vendorKey = isBoodmoVendor ? "boodmo" : "autodukan"
+        const isNoResults = prodCount === 0 && event.status !== "failed" && event.status !== "Failed" && event.status !== "blocked" && event.status !== "timeout"
+
+        // 1. Update supplier status independently
         setSuppliers((prev) =>
           prev.map((s) => {
-            if (s.vendor === event.vendor) {
+            if (s.vendor === vendorKey) {
               return {
                 ...s,
-                status: "Completed",
+                status: isNoResults ? "No Results" : "Completed",
                 progress: 100,
-                currentOperation: `Completed: ${prodCount} parts found`,
+                currentOperation: isNoResults
+                  ? "0 matching products found for this vehicle and part"
+                  : `Completed: ${prodCount} parts found`,
                 productsExtracted: prodCount,
                 elapsedSeconds: event.elapsed_seconds,
               }
@@ -220,31 +232,46 @@ export default function App() {
           })
         )
 
-        // 2. Incremental Product Results Addition!
+        // 2. Incremental Product Results Addition to supplier-specific state
         if (event.results && event.results.length > 0) {
-          setListings((prevListings) => {
-            const existingKeys = new Set(prevListings.map(getListingCompositeKey))
-            const normalizedItems = event.results.map((l) => normalizeListingData(l, event.vendor))
-            const newItems = []
-            for (const item of normalizedItems) {
-              const key = getListingCompositeKey(item)
-              if (!existingKeys.has(key)) {
-                existingKeys.add(key)
-                newItems.push(item)
+          const normalizedItems = event.results.map((l) => normalizeListingData(l, vendorKey))
+          if (vendorKey === "boodmo") {
+            setBoodmoListings((prevListings) => {
+              const existingKeys = new Set(prevListings.map(getListingCompositeKey))
+              const newItems = []
+              for (const item of normalizedItems) {
+                const key = getListingCompositeKey(item)
+                if (!existingKeys.has(key)) {
+                  existingKeys.add(key)
+                  newItems.push(item)
+                }
               }
-            }
-            return [...prevListings, ...newItems]
-          })
+              return [...prevListings, ...newItems]
+            })
+          } else {
+            setAutodukanListings((prevListings) => {
+              const existingKeys = new Set(prevListings.map(getListingCompositeKey))
+              const newItems = []
+              for (const item of normalizedItems) {
+                const key = getListingCompositeKey(item)
+                if (!existingKeys.has(key)) {
+                  existingKeys.add(key)
+                  newItems.push(item)
+                }
+              }
+              return [...prevListings, ...newItems]
+            })
+          }
         }
 
         // 3. Show Completion Notification Toast
         setNotifications((prev) => [
           ...prev,
           {
-            id: `${event.vendor}-${Date.now()}`,
-            supplier: event.supplier,
-            vendor: event.vendor,
-            status: "completed",
+            id: `${vendorKey}-${Date.now()}`,
+            supplier: event.supplier || (vendorKey === "boodmo" ? "Boodmo" : "AutoDukan"),
+            vendor: vendorKey,
+            status: isNoResults ? "no_results" : "completed",
             products_found: prodCount,
             elapsed_seconds: event.elapsed_seconds,
           },
@@ -297,58 +324,89 @@ export default function App() {
             },
           ])
         }
-        if (event.outcome?.listings && event.outcome.listings.length > 0) {
-          setListings((prevListings) => {
-            const existingKeys = new Set(prevListings.map(getListingCompositeKey))
-            const normalizedItems = event.outcome.listings.map((l) => normalizeListingData(l))
-            const newItems = []
-            for (const item of normalizedItems) {
-              const key = getListingCompositeKey(item)
-              if (!existingKeys.has(key)) {
-                existingKeys.add(key)
-                newItems.push(item)
+
+        // Update supplier listings and statuses independently from vendor_outcomes
+        if (event.outcome?.vendor_outcomes && event.outcome.vendor_outcomes.length > 0) {
+          for (const vo of event.outcome.vendor_outcomes) {
+            const isBoodmoVo = vo.vendor === "boodmo" || (vo.supplier || "").toLowerCase().includes("boodmo")
+            const voVendor = isBoodmoVo ? "boodmo" : "autodukan"
+            const voListings = (vo.listings || []).map((l) => normalizeListingData(l, voVendor))
+            const voCount = voListings.length
+            const isNoResults = voCount === 0 && vo.status !== "failed" && vo.status !== "timeout" && vo.status !== "blocked"
+
+            if (voCount > 0) {
+              if (voVendor === "boodmo") {
+                setBoodmoListings((prevListings) => {
+                  const existingKeys = new Set(prevListings.map(getListingCompositeKey))
+                  const newItems = []
+                  for (const item of voListings) {
+                    const key = getListingCompositeKey(item)
+                    if (!existingKeys.has(key)) {
+                      existingKeys.add(key)
+                      newItems.push(item)
+                    }
+                  }
+                  return [...prevListings, ...newItems]
+                })
+              } else {
+                setAutodukanListings((prevListings) => {
+                  const existingKeys = new Set(prevListings.map(getListingCompositeKey))
+                  const newItems = []
+                  for (const item of voListings) {
+                    const key = getListingCompositeKey(item)
+                    if (!existingKeys.has(key)) {
+                      existingKeys.add(key)
+                      newItems.push(item)
+                    }
+                  }
+                  return [...prevListings, ...newItems]
+                })
               }
             }
-            return [...prevListings, ...newItems]
-          })
-        }
-        if (event.outcome?.vendor_outcomes && event.outcome.vendor_outcomes.length > 0) {
-          // Fallback merge: ensure any listings inside vendor_outcomes are also captured
-          const allVoListings = event.outcome.vendor_outcomes.flatMap((vo) =>
-            (vo.listings || []).map((l) => normalizeListingData(l, vo.vendor))
-          )
-          if (allVoListings.length > 0) {
-            setListings((prevListings) => {
-              const existingKeys = new Set(prevListings.map(getListingCompositeKey))
-              const newItems = []
-              for (const item of allVoListings) {
-                const key = getListingCompositeKey(item)
-                if (!existingKeys.has(key)) {
-                  existingKeys.add(key)
-                  newItems.push(item)
+
+            setSuppliers((prev) =>
+              prev.map((s) => {
+                if (s.vendor === voVendor) {
+                  return {
+                    ...s,
+                    status: vo.status === "failed" ? "Failed" : vo.status === "blocked" ? "Blocked" : isNoResults ? "No Results" : "Completed",
+                    progress: 100,
+                    currentOperation: isNoResults
+                      ? "0 matching products found for this vehicle and part"
+                      : `Completed: ${voCount} parts found`,
+                    productsExtracted: voCount,
+                    elapsedSeconds: vo.elapsed_seconds || 0.1,
+                  }
                 }
-              }
+                return s
+              })
+            )
+          }
+        } else if (event.outcome?.listings && event.outcome.listings.length > 0) {
+          const boodmoItems = []
+          const autodukanItems = []
+          for (const l of event.outcome.listings) {
+            const norm = normalizeListingData(l)
+            if (norm.vendor === "autodukan") {
+              autodukanItems.push(norm)
+            } else {
+              boodmoItems.push(norm)
+            }
+          }
+          if (boodmoItems.length > 0) {
+            setBoodmoListings((prevListings) => {
+              const existingKeys = new Set(prevListings.map(getListingCompositeKey))
+              const newItems = boodmoItems.filter((i) => !existingKeys.has(getListingCompositeKey(i)))
               return [...prevListings, ...newItems]
             })
           }
-
-          setSuppliers((prev) =>
-            prev.map((s) => {
-              const vo = event.outcome.vendor_outcomes.find((v) => v.vendor === s.vendor)
-              if (vo) {
-                const count = (vo.listings || []).length
-                return {
-                  ...s,
-                  status: "Completed",
-                  progress: 100,
-                  currentOperation: `Completed: ${count} parts found`,
-                  productsExtracted: count,
-                  elapsedSeconds: 0.1,
-                }
-              }
-              return s
+          if (autodukanItems.length > 0) {
+            setAutodukanListings((prevListings) => {
+              const existingKeys = new Set(prevListings.map(getListingCompositeKey))
+              const newItems = autodukanItems.filter((i) => !existingKeys.has(getListingCompositeKey(i)))
+              return [...prevListings, ...newItems]
             })
-          )
+          }
         }
         setPendingQuestion(null)
         setOverallStatus("Completed")
@@ -430,6 +488,10 @@ export default function App() {
       },
     ])
 
+    // Reset supplier states for a fresh search
+    setBoodmoListings([])
+    setAutodukanListings([])
+    setSuppliers(INITIAL_SUPPLIERS)
     setIsSearching(true)
     setOverallStatus("In Progress")
 
@@ -510,7 +572,8 @@ export default function App() {
     setPendingQuestion(null)
     setVehicleProfile(null)
     setSuppliers(INITIAL_SUPPLIERS)
-    setListings([])
+    setBoodmoListings([])
+    setAutodukanListings([])
     setLogs([])
     setNotifications([])
     setActiveFilter("all")
@@ -543,7 +606,7 @@ export default function App() {
 
   // Summary Metrics Calculation
   const completedSuppliers = suppliers.filter(
-    (s) => s.status === "Completed"
+    (s) => s.status === "Completed" || s.status === "No Results"
   ).length
   const failedSuppliers = suppliers.filter((s) => s.status === "Failed").length
   const totalVerifiedPrices = listings.filter(
@@ -655,6 +718,8 @@ export default function App() {
           >
             <ProductResults
               listings={listings}
+              boodmoListings={boodmoListings}
+              autodukanListings={autodukanListings}
               suppliers={suppliers}
               activeFilter={activeFilter}
               onSelectFilter={setActiveFilter}
