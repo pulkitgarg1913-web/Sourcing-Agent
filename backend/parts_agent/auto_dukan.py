@@ -34,6 +34,11 @@ from .perf_logger import perf_monitor
 
 log = logging.getLogger(__name__)
 
+
+class BotProtectionError(RuntimeError):
+    """Raised when AutoDukan displays a Cloudflare challenge, CAPTCHA, or 403/429 block."""
+    pass
+
 BASE = "https://autodukan.com"
 MAX_PRODUCT_PAGES = int(os.environ.get("MAX_PRODUCT_PAGES", "0"))  # 0 in production/demo to avoid heavy tab spawning
 DETAIL_WORKERS = int(os.environ.get("DETAIL_WORKERS", "1"))
@@ -239,6 +244,9 @@ class AutoDukanAdapter:
         self._confirmed_vehicle: Optional[str] = None
         self._confirmed_category: Optional[str] = None
         self._using_search_fallback = False
+        self._is_blocked: bool = False
+        self._challenge_detected: bool = False
+        self._blocked_urls: set[str] = set()
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -289,6 +297,10 @@ class AutoDukanAdapter:
         RETRY_TIMEOUT = int(os.environ.get("NAVIGATION_RETRY_TIMEOUT_SECONDS", "12000"))
         t0 = time.time()
 
+        if getattr(self, "_is_blocked", False) or url in getattr(self, "_blocked_urls", set()):
+            log.warning("AutoDukan access is already blocked; skipping repeated navigation to %s", url)
+            raise BotProtectionError(f"AutoDukan access already blocked for {url}; skipping retry")
+
         for attempt in range(2):
             try:
                 await self.start()
@@ -296,6 +308,8 @@ class AutoDukanAdapter:
                 wait_state = "domcontentloaded" if attempt == 0 else "commit"
                 await self.page.goto(url, wait_until=wait_state, timeout=timeout_ms)
                 break
+            except BotProtectionError:
+                raise
             except Exception as exc:
                 err_msg = str(exc).lower()
                 is_crash = any(k in err_msg for k in ("crashed", "closed", "aborted", "detached", "context destroyed"))
@@ -308,6 +322,8 @@ class AutoDukanAdapter:
                         if self.page:
                             await self.page.goto(url, wait_until="commit", timeout=RETRY_TIMEOUT)
                             break
+                    except BotProtectionError:
+                        raise
                     except Exception as e2:
                         log.warning("AutoDukan retry commit failed: %s", e2)
                 else:
@@ -328,16 +344,25 @@ class AutoDukanAdapter:
                 combined = f"{title.lower()} {body_snippet.lower()}"
                 if any(w in combined for w in ("attention required! | cloudflare", "just a moment...", "turnstile", "verify you are human", "cf-challenge")):
                     log.warning("AutoDukan bot-protection challenge detected at %s", url)
+                    self._is_blocked = True
+                    self._challenge_detected = True
+                    self._blocked_urls.add(url)
                     m = perf_monitor.get_metrics(self.session_id, self.name)
                     m.status = "blocked"
-                    raise RuntimeError(f"AutoDukan bot-protection challenge encountered at {url}")
+                    m.error_category = "bot_protection_challenge"
+                    m.error_message = f"Bot-protection challenge encountered at {url}"
+                    raise BotProtectionError(f"AutoDukan bot-protection challenge encountered at {url}")
                 if any(w in combined for w in ("403 forbidden", "access denied", "error 403", "429 too many requests")):
                     log.warning("AutoDukan access blocked (403/429) at %s", url)
+                    self._is_blocked = True
+                    self._blocked_urls.add(url)
                     m = perf_monitor.get_metrics(self.session_id, self.name)
                     m.status = "blocked"
-                    raise RuntimeError(f"AutoDukan access denied (403/429) at {url}")
+                    m.error_category = "access_denied"
+                    m.error_message = f"Access denied (403/429) at {url}"
+                    raise BotProtectionError(f"AutoDukan access denied (403/429) at {url}")
             except Exception as chk_err:
-                if "challenge" in str(chk_err).lower() or "denied" in str(chk_err).lower():
+                if isinstance(chk_err, BotProtectionError) or "challenge" in str(chk_err).lower() or "denied" in str(chk_err).lower():
                     raise
 
         m = perf_monitor.get_metrics(self.session_id, self.name)
@@ -1496,8 +1521,11 @@ class AutoDukanAdapter:
                 if isinstance(eval_res, dict) and eval_res.get("challenge"):
                     log.warning("AutoDukan bot-protection challenge detected during _read_cards")
                     self._challenge_detected = True
-                    raise RuntimeError(f"AutoDukan bot-protection challenge encountered at {self.page.url}")
+                    self._is_blocked = True
+                    raise BotProtectionError(f"AutoDukan bot-protection challenge encountered at {self.page.url}")
                 return eval_res if isinstance(eval_res, list) else eval_res.get("items", [])
+            except BotProtectionError:
+                raise
             except Exception as exc:
                 log.warning("AutoDukan _read_cards attempt %d failed: %s", attempt + 1, exc)
                 if attempt == 0 and self.page and not self.page.is_closed():
@@ -1603,94 +1631,250 @@ class AutoDukanAdapter:
     async def collect(self, profile: VehicleProfile) -> SearchOutcome:
         t0_collect = time.time()
         m = perf_monitor.get_metrics(self.session_id, self.name)
-        await self.start()
         vehicle = _vehicle_label(profile)
 
-        if getattr(self, "_challenge_detected", False) or getattr(self, "_is_blocked", False):
-            elapsed = round(time.time() - t0_collect, 2)
-            m.total_seconds = elapsed
-            m.status = "challenge_detected"
-            perf_monitor.log_supplier_completed(self.session_id, self.name)
-            return SearchOutcome(
-                vendor=self.name,
-                status="challenge_detected",
-                vehicle_label=vehicle,
-                listings=[],
-                source_url=self.last_search_url or (self.page.url if self.page else self.base_url),
-                message="AutoDukan bot-protection challenge encountered; automated search safely skipped.",
-                elapsed_seconds=elapsed,
-            )
+        try:
+            await self.start()
 
-        target_url = self.last_search_url or getattr(self, "_category_url", None)
-        if target_url and (not self.page.url or self.page.url == "about:blank"):
-            try:
-                await self._goto(target_url)
-            except Exception as e:
-                log.warning("Could not navigate to target_url on collect: %s", e)
-
-        # Guard against callers that invoke collect() without first calling advance().
-        sig = f"{profile.maker}:{profile.model}:{profile.year}:{profile.variant}:{profile.category}"
-        if not (self._advanced_signature == sig and self._advanced_ok):
-            need = await self.advance(profile)
-            if need:
+            if getattr(self, "_challenge_detected", False) or getattr(self, "_is_blocked", False):
                 elapsed = round(time.time() - t0_collect, 2)
-                outcome = SearchOutcome(
+                m.total_seconds = elapsed
+                m.status = "blocked"
+                m.error_category = "bot_protection_challenge"
+                m.error_message = "AutoDukan bot-protection challenge encountered; automated search safely skipped."
+                perf_monitor.log_supplier_completed(self.session_id, self.name)
+                return SearchOutcome(
                     vendor=self.name,
-                    status="extraction_failed",
+                    status="blocked",
                     vehicle_label=vehicle,
                     listings=[],
+                    source_url=self.last_search_url or (self.page.url if self.page else self.base_url),
+                    message="AutoDukan bot-protection challenge encountered; automated search safely skipped.",
+                    elapsed_seconds=elapsed,
+                    error="bot_protection_challenge",
+                )
+
+            target_url = self.last_search_url or getattr(self, "_category_url", None)
+            if target_url and (not self.page.url or self.page.url == "about:blank"):
+                try:
+                    await self._goto(target_url)
+                except Exception as e:
+                    log.warning("Could not navigate to target_url on collect: %s", e)
+
+            # Guard against callers that invoke collect() without first calling advance().
+            sig = f"{profile.maker}:{profile.model}:{profile.year}:{profile.variant}:{profile.category}"
+            if not (self._advanced_signature == sig and self._advanced_ok):
+                need = await self.advance(profile)
+                if need:
+                    known_car = bool((profile.maker or profile.hints.get("make")) and (profile.model or profile.hints.get("model")))
+                    if known_car:
+                        log.info("AutoDukan collect encountered need %s on known vehicle; falling back to direct search bar", need.field)
+                        await self._search_fallback(profile)
+                    else:
+                        elapsed = round(time.time() - t0_collect, 2)
+                        outcome = SearchOutcome(
+                            vendor=self.name,
+                            status="failed",
+                            vehicle_label=vehicle,
+                            listings=[],
+                            source_url=self.last_search_url or self.page.url,
+                            message=need.question,
+                            elapsed_seconds=elapsed,
+                            clarification_required=True,
+                            missing_fields=[need.field],
+                            error="need_input",
+                        )
+                        m.total_seconds = elapsed
+                        m.status = outcome.status
+                        perf_monitor.log_supplier_completed(self.session_id, self.name)
+                        return outcome
+
+            if getattr(self, "_using_search_fallback", False):
+                vehicle = f"{profile.maker or profile.hints.get('make') or ''} {profile.model or profile.hints.get('model') or ''}".strip() or "the requested vehicle"
+                self.progress(f"Reading AutoDukan search bar results for {vehicle}")
+                cards = await self._read_cards()
+                if not cards:
+                    make = (profile.maker or profile.hints.get('make') or '').strip()
+                    model = (profile.model or profile.hints.get('model') or '').strip()
+                    part = (profile.part or profile.category or '').strip()
+                    clean_model = model
+                    if make and model.lower().startswith(make.lower()):
+                        clean_model = model[len(make):].strip()
+
+                    candidate_queries = []
+                    if self._car_model_id:
+                        if part and part != "part":
+                            candidate_queries.append(part)
+                        if clean_model and part:
+                            candidate_queries.append(f"{clean_model} {part}")
+                        if clean_model and profile.category and profile.category != part:
+                            candidate_queries.append(f"{clean_model} {profile.category}")
+                    else:
+                        if clean_model and part:
+                            candidate_queries.append(f"{clean_model} {part}")
+                        if clean_model and profile.category and profile.category != part:
+                            candidate_queries.append(f"{clean_model} {profile.category}")
+                        if part and part != "part":
+                            candidate_queries.append(part)
+
+                    import urllib.parse
+                    for cand_query in candidate_queries:
+                        if cards:
+                            break
+                        self.progress(f"Refining search to '{cand_query}' on AutoDukan")
+                        qs = f"search={urllib.parse.quote_plus(cand_query)}&search_term={urllib.parse.quote_plus(cand_query)}"
+                        if self._car_model_id:
+                            qs = f"car_model_id={self._car_model_id}&{qs}"
+                        url = f"{self.base_url}/products-list?{qs}"
+                        await self._goto(url)
+                        cards = await self._read_cards()
+
+                listings: list[Listing] = []
+                seen: set[str] = set()
+                is_verified = bool(self._vehicle_confirmed and (self._car_model_id or (self._category_confirmed and not getattr(self, "_using_search_fallback", False))))
+                target_maker = profile.maker or profile.hints.get("make") or ""
+                target_model = profile.model or profile.hints.get("model") or ""
+                for card in cards:
+                    url = urljoin(self.base_url + "/", card.get("url") or "")
+                    title = _clean(card.get("title"))
+                    if not url or not title or url in seen:
+                        continue
+                    seen.add(url)
+                    clean_title = re.sub(r"^(?:Add to Cart|View)\s*", "", title, flags=re.I).strip()
+                    raw_card_brand = _clean(card.get("brand") or "")
+
+                    # Strictly reject cross-brand contradictory products (e.g. Audi oil filter when searching Tata)
+                    compat_status, compat_reason = relevance.check_vehicle_compatibility(
+                        product_title=clean_title,
+                        product_brand=raw_card_brand,
+                        target_maker=target_maker,
+                        target_model=target_model,
+                    )
+                    if compat_status == "incompatible":
+                        log.info("AutoDukan rejected incompatible product '%s' (brand: '%s') for vehicle '%s %s'", clean_title, raw_card_brand, target_maker, target_model)
+                        continue
+
+                    # Strictly reject wrong part types (e.g. brackets, caps, separators when searching for fuel pump or air filter)
+                    req_part = profile.part or profile.hints.get("raw_request") or ""
+                    if req_part:
+                        part_status, part_reason = relevance.check_part_family_compatibility(
+                            product_title=clean_title,
+                            requested_part=req_part,
+                            category=profile.category or "",
+                        )
+                        if part_status == relevance.WRONG_PART_TYPE:
+                            log.info("AutoDukan rejected wrong part type '%s': %s", clean_title, part_reason)
+                            continue
+
+                    item_fitment = "verified" if is_verified else "unverified"
+                    item_fitment_basis = (
+                        f"AutoDukan verified vehicle catalog for {vehicle}"
+                        if is_verified
+                        else f"AutoDukan keyword search bar fallback for '{vehicle}'"
+                    )
+
+                    assigned_brand = raw_card_brand or profile.maker or "Aftermarket"
+                    listing = Listing(
+                        title=clean_title,
+                        brand=assigned_brand,
+                        part_number=_clean(card.get("sku") or ""),
+                        price=_price(card.get("priceText")),
+                        mrp=_price(card.get("mrpText")),
+                        url=url,
+                        fitment=item_fitment,
+                        fitment_basis=item_fitment_basis,
+                        vendor="autodukan",
+                        supplier="AutoDukan",
+                        supplier_name="AutoDukan",
+                        seller="AutoDukan Distributor",
+                        dispatch="24–48 hours",
+                    )
+                    if item_fitment != "verified":
+                        listing.notes.append("Confirm exact OEM/variant compatibility with AutoDukan before ordering")
+                    if listing.price is None:
+                        listing.notes.append("price was not readable on the category result")
+                    listing.available = True if listing.price is not None else None
+                    listings.append(listing)
+                elapsed = round(time.time() - t0_collect, 2)
+                m.total_seconds = elapsed
+                m.products_extracted = len(listings)
+                m.status = "ok" if listings else "no_results"
+                perf_monitor.log_supplier_completed(self.session_id, self.name)
+                return SearchOutcome(
+                    vendor=self.name,
+                    status="ok" if listings else "no_results",
+                    vehicle_label=vehicle,
+                    listings=[l.to_dict() if hasattr(l, "to_dict") else l for l in listings],
                     source_url=self.last_search_url or self.page.url,
-                    message=need.question,
+                    message=f"AutoDukan search bar found {len(listings)} listings for {vehicle}." if listings else f"AutoDukan search bar found no listings for {vehicle}.",
                     elapsed_seconds=elapsed,
                 )
-                m.total_seconds = elapsed
-                m.status = outcome.status
-                perf_monitor.log_supplier_completed(self.session_id, self.name)
-                return outcome
 
-        if getattr(self, "_using_search_fallback", False):
-            vehicle = f"{profile.maker or profile.hints.get('make') or ''} {profile.model or profile.hints.get('model') or ''}".strip() or "the requested vehicle"
-            self.progress(f"Reading AutoDukan search bar results for {vehicle}")
+            self.progress(f"Reading AutoDukan {profile.category} listings for {vehicle}")
             cards = await self._read_cards()
-            if not cards:
-                make = (profile.maker or profile.hints.get('make') or '').strip()
-                model = (profile.model or profile.hints.get('model') or '').strip()
-                part = (profile.part or profile.category or '').strip()
-                clean_model = model
-                if make and model.lower().startswith(make.lower()):
-                    clean_model = model[len(make):].strip()
-
-                candidate_queries = []
-                if self._car_model_id:
-                    if part and part != "part":
-                        candidate_queries.append(part)
-                    if clean_model and part:
-                        candidate_queries.append(f"{clean_model} {part}")
-                    if clean_model and profile.category and profile.category != part:
-                        candidate_queries.append(f"{clean_model} {profile.category}")
+            if not cards and not getattr(self, "_using_search_fallback", False):
+                state = await self._page_state()
+                body_norm = _norm(state.get("text", ""))
+                if any(message in body_norm for message in ("variant missing", "please select the car variant", "please select the car varient")):
+                    log.info("AutoDukan variant missing on category page; falling back to search bar for %s", vehicle)
                 else:
-                    if clean_model and part:
-                        candidate_queries.append(f"{clean_model} {part}")
-                    if clean_model and profile.category and profile.category != part:
-                        candidate_queries.append(f"{clean_model} {profile.category}")
-                    if part and part != "part":
-                        candidate_queries.append(part)
+                    log.info("AutoDukan category view yielded 0 cards; falling back to search bar for %s", vehicle)
+                await self._search_fallback(profile)
+                cards = await self._read_cards()
+                if not cards:
+                    make = (profile.maker or profile.hints.get('make') or '').strip()
+                    model = (profile.model or profile.hints.get('model') or '').strip()
+                    part = (profile.part or profile.category or '').strip()
+                    clean_model = model
+                    if make and model.lower().startswith(make.lower()):
+                        clean_model = model[len(make):].strip()
 
-                import urllib.parse
-                for cand_query in candidate_queries:
-                    if cards:
-                        break
-                    self.progress(f"Refining search to '{cand_query}' on AutoDukan")
-                    qs = f"search={urllib.parse.quote_plus(cand_query)}&search_term={urllib.parse.quote_plus(cand_query)}"
+                    candidate_queries = []
                     if self._car_model_id:
-                        qs = f"car_model_id={self._car_model_id}&{qs}"
-                    url = f"{self.base_url}/products-list?{qs}"
-                    await self._goto(url)
-                    cards = await self._read_cards()
+                        if part and part != "part":
+                            candidate_queries.append(part)
+                        if clean_model and part:
+                            candidate_queries.append(f"{clean_model} {part}")
+                        if clean_model and profile.category and profile.category != part:
+                            candidate_queries.append(f"{clean_model} {profile.category}")
+                    else:
+                        if clean_model and part:
+                            candidate_queries.append(f"{clean_model} {part}")
+                        if clean_model and profile.category and profile.category != part:
+                            candidate_queries.append(f"{clean_model} {profile.category}")
+                        if part and part != "part":
+                            candidate_queries.append(part)
+
+                    import urllib.parse
+                    for cand_query in candidate_queries:
+                        if cards:
+                            break
+                        self.progress(f"Refining search to '{cand_query}' on AutoDukan")
+                        qs = f"search={urllib.parse.quote_plus(cand_query)}&search_term={urllib.parse.quote_plus(cand_query)}"
+                        if self._car_model_id:
+                            qs = f"car_model_id={self._car_model_id}&{qs}"
+                        url = f"{self.base_url}/products-list?{qs}"
+                        await self._goto(url)
+                        cards = await self._read_cards()
+
+            if not cards:
+                elapsed = round(time.time() - t0_collect, 2)
+                m.total_seconds = elapsed
+                m.products_extracted = 0
+                m.status = "no_results"
+                perf_monitor.log_supplier_completed(self.session_id, self.name)
+                return SearchOutcome(
+                    vendor=self.name,
+                    status="no_results",
+                    vehicle_label=vehicle,
+                    listings=[],
+                    source_url=self.page.url,
+                    message=f"AutoDukan has no matching {profile.category or profile.part or 'parts'} in stock for {vehicle}.",
+                    elapsed_seconds=elapsed,
+                )
 
             listings: list[Listing] = []
             seen: set[str] = set()
-            is_verified = bool(self._vehicle_confirmed and (self._car_model_id or (self._category_confirmed and not getattr(self, "_using_search_fallback", False))))
             target_maker = profile.maker or profile.hints.get("make") or ""
             target_model = profile.model or profile.hints.get("model") or ""
             for card in cards:
@@ -1699,6 +1883,7 @@ class AutoDukanAdapter:
                 if not url or not title or url in seen:
                     continue
                 seen.add(url)
+                is_verified = bool(self._vehicle_confirmed and (self._car_model_id or (self._category_confirmed and not getattr(self, "_using_search_fallback", False))))
                 clean_title = re.sub(r"^(?:Add to Cart|View)\s*", "", title, flags=re.I).strip()
                 raw_card_brand = _clean(card.get("brand") or "")
 
@@ -1742,11 +1927,6 @@ class AutoDukanAdapter:
                     url=url,
                     fitment=item_fitment,
                     fitment_basis=item_fitment_basis,
-                    vendor="autodukan",
-                    supplier="AutoDukan",
-                    supplier_name="AutoDukan",
-                    seller="AutoDukan Distributor",
-                    dispatch="24–48 hours",
                 )
                 if item_fitment != "verified":
                     listing.notes.append("Confirm exact OEM/variant compatibility with AutoDukan before ordering")
@@ -1754,186 +1934,104 @@ class AutoDukanAdapter:
                     listing.notes.append("price was not readable on the category result")
                 listing.available = True if listing.price is not None else None
                 listings.append(listing)
+
+            if not listings:
+                elapsed = round(time.time() - t0_collect, 2)
+                m.total_seconds = elapsed
+                m.products_extracted = 0
+                m.status = "no_results"
+                perf_monitor.log_supplier_completed(self.session_id, self.name)
+                return SearchOutcome(
+                    vendor=self.name,
+                    status="no_results",
+                    vehicle_label=vehicle,
+                    listings=[],
+                    source_url=self.page.url,
+                    message=f"AutoDukan has no matching {profile.category or profile.part or 'parts'} in stock for {vehicle}.",
+                    elapsed_seconds=elapsed,
+                )
+
+            self.progress(f"Enriching {min(len(listings), MAX_PRODUCT_PAGES)} AutoDukan product pages")
+            targets = listings[:MAX_PRODUCT_PAGES]
+            pages = [await self.page.context.new_page() for _ in range(min(DETAIL_WORKERS, len(targets)))]
+            queue = list(targets)
+
+            async def worker(tab: Page):
+                while queue:
+                    item = queue.pop(0)
+                    try:
+                        await self._read_detail(tab, item)
+                    except Exception as exc:
+                        item.notes.append(f"detail page could not be read ({type(exc).__name__})")
+
+            try:
+                await asyncio.gather(*(worker(tab) for tab in pages))
+            finally:
+                for tab in pages:
+                    await tab.close()
+
+            for item in listings[MAX_PRODUCT_PAGES:]:
+                item.notes.append("category-card data only; detail page not opened")
+
+            stock_rank = {True: 0, None: 1, False: 2}
+            listings.sort(key=lambda item: (stock_rank.get(item.available, 1), item.price if item.price is not None else float("inf")))
+
             elapsed = round(time.time() - t0_collect, 2)
             m.total_seconds = elapsed
             m.products_extracted = len(listings)
             m.status = "ok" if listings else "no_results"
             perf_monitor.log_supplier_completed(self.session_id, self.name)
+
             return SearchOutcome(
                 vendor=self.name,
                 status="ok" if listings else "no_results",
                 vehicle_label=vehicle,
-                listings=[l.to_dict() if hasattr(l, "to_dict") else l for l in listings],
+                listings=[item.to_dict() for item in listings],
                 source_url=self.last_search_url or self.page.url,
-                message=f"AutoDukan search bar found {len(listings)} listings for {vehicle}." if listings else f"AutoDukan search bar found no listings for {vehicle}.",
                 elapsed_seconds=elapsed,
+                raw_count=len(listings),
+                raw_listings=[item.to_dict() for item in listings],
             )
-
-        self.progress(f"Reading AutoDukan {profile.category} listings for {vehicle}")
-        cards = await self._read_cards()
-        if not cards and not getattr(self, "_using_search_fallback", False):
-            state = await self._page_state()
-            body_norm = _norm(state.get("text", ""))
-            if any(message in body_norm for message in ("variant missing", "please select the car variant", "please select the car varient")):
-                log.info("AutoDukan variant missing on category page; falling back to search bar for %s", vehicle)
-            else:
-                log.info("AutoDukan category view yielded 0 cards; falling back to search bar for %s", vehicle)
-            await self._search_fallback(profile)
-            cards = await self._read_cards()
-            if not cards:
-                make = (profile.maker or profile.hints.get('make') or '').strip()
-                model = (profile.model or profile.hints.get('model') or '').strip()
-                part = (profile.part or profile.category or '').strip()
-                clean_model = model
-                if make and model.lower().startswith(make.lower()):
-                    clean_model = model[len(make):].strip()
-
-                candidate_queries = []
-                if self._car_model_id:
-                    if part and part != "part":
-                        candidate_queries.append(part)
-                    if clean_model and part:
-                        candidate_queries.append(f"{clean_model} {part}")
-                    if clean_model and profile.category and profile.category != part:
-                        candidate_queries.append(f"{clean_model} {profile.category}")
-                else:
-                    if clean_model and part:
-                        candidate_queries.append(f"{clean_model} {part}")
-                    if clean_model and profile.category and profile.category != part:
-                        candidate_queries.append(f"{clean_model} {profile.category}")
-                    if part and part != "part":
-                        candidate_queries.append(part)
-
-                import urllib.parse
-                for cand_query in candidate_queries:
-                    if cards:
-                        break
-                    self.progress(f"Refining search to '{cand_query}' on AutoDukan")
-                    qs = f"search={urllib.parse.quote_plus(cand_query)}&search_term={urllib.parse.quote_plus(cand_query)}"
-                    if self._car_model_id:
-                        qs = f"car_model_id={self._car_model_id}&{qs}"
-                    url = f"{self.base_url}/products-list?{qs}"
-                    await self._goto(url)
-                    cards = await self._read_cards()
-
-        if not cards:
+        except BotProtectionError as bpe:
+            elapsed = round(time.time() - t0_collect, 2)
+            m.total_seconds = elapsed
+            m.status = "blocked"
+            m.error_category = "bot_protection_challenge"
+            m.error_message = str(bpe)
+            perf_monitor.log_supplier_completed(self.session_id, self.name)
+            try:
+                await self.close()
+            except Exception:
+                pass
             return SearchOutcome(
                 vendor=self.name,
-                status="no_results",
+                status="blocked",
                 vehicle_label=vehicle,
                 listings=[],
-                source_url=self.page.url,
-                message=f"AutoDukan has no matching {profile.category or profile.part or 'parts'} in stock for {vehicle}.",
+                source_url=self.last_search_url or (self.page.url if self.page else self.base_url),
+                message="AutoDukan bot-protection challenge encountered; automated search safely skipped.",
+                elapsed_seconds=elapsed,
+                error="bot_protection_challenge",
             )
-
-        listings: list[Listing] = []
-        seen: set[str] = set()
-        target_maker = profile.maker or profile.hints.get("make") or ""
-        target_model = profile.model or profile.hints.get("model") or ""
-        for card in cards:
-            url = urljoin(self.base_url + "/", card.get("url") or "")
-            title = _clean(card.get("title"))
-            if not url or not title or url in seen:
-                continue
-            seen.add(url)
-            is_verified = bool(self._vehicle_confirmed and (self._car_model_id or (self._category_confirmed and not getattr(self, "_using_search_fallback", False))))
-            clean_title = re.sub(r"^(?:Add to Cart|View)\s*", "", title, flags=re.I).strip()
-            raw_card_brand = _clean(card.get("brand") or "")
-
-            # Strictly reject cross-brand contradictory products (e.g. Audi oil filter when searching Tata)
-            compat_status, compat_reason = relevance.check_vehicle_compatibility(
-                product_title=clean_title,
-                product_brand=raw_card_brand,
-                target_maker=target_maker,
-                target_model=target_model,
-            )
-            if compat_status == "incompatible":
-                log.info("AutoDukan rejected incompatible product '%s' (brand: '%s') for vehicle '%s %s'", clean_title, raw_card_brand, target_maker, target_model)
-                continue
-
-            # Strictly reject wrong part types (e.g. brackets, caps, separators when searching for fuel pump or air filter)
-            req_part = profile.part or profile.hints.get("raw_request") or ""
-            if req_part:
-                part_status, part_reason = relevance.check_part_family_compatibility(
-                    product_title=clean_title,
-                    requested_part=req_part,
-                    category=profile.category or "",
-                )
-                if part_status == relevance.WRONG_PART_TYPE:
-                    log.info("AutoDukan rejected wrong part type '%s': %s", clean_title, part_reason)
-                    continue
-
-            item_fitment = "verified" if is_verified else "unverified"
-            item_fitment_basis = (
-                f"AutoDukan verified vehicle catalog for {vehicle}"
-                if is_verified
-                else f"AutoDukan keyword search bar fallback for '{vehicle}'"
-            )
-
-            assigned_brand = raw_card_brand or profile.maker or "Aftermarket"
-            listing = Listing(
-                title=clean_title,
-                brand=assigned_brand,
-                part_number=_clean(card.get("sku") or ""),
-                price=_price(card.get("priceText")),
-                mrp=_price(card.get("mrpText")),
-                url=url,
-                fitment=item_fitment,
-                fitment_basis=item_fitment_basis,
-            )
-            if item_fitment != "verified":
-                listing.notes.append("Confirm exact OEM/variant compatibility with AutoDukan before ordering")
-            if listing.price is None:
-                listing.notes.append("price was not readable on the category result")
-            listing.available = True if listing.price is not None else None
-            listings.append(listing)
-
-        if not listings:
+        except Exception as exc:
+            elapsed = round(time.time() - t0_collect, 2)
+            m.total_seconds = elapsed
+            m.status = "failed"
+            m.error_category = type(exc).__name__
+            m.error_message = str(exc)
+            log.exception("AutoDukan collect failed: %s", exc)
+            perf_monitor.log_supplier_completed(self.session_id, self.name)
+            try:
+                await self.close()
+            except Exception:
+                pass
             return SearchOutcome(
                 vendor=self.name,
-                status="no_results",
+                status="failed",
                 vehicle_label=vehicle,
                 listings=[],
-                source_url=self.page.url,
-                message=f"AutoDukan has no matching {profile.category or profile.part or 'parts'} in stock for {vehicle}.",
+                source_url=self.last_search_url or (self.page.url if self.page else self.base_url),
+                message=f"AutoDukan search failed: {exc}",
+                elapsed_seconds=elapsed,
+                error=type(exc).__name__,
             )
-
-        self.progress(f"Enriching {min(len(listings), MAX_PRODUCT_PAGES)} AutoDukan product pages")
-        targets = listings[:MAX_PRODUCT_PAGES]
-        pages = [await self.page.context.new_page() for _ in range(min(DETAIL_WORKERS, len(targets)))]
-        queue = list(targets)
-
-        async def worker(tab: Page):
-            while queue:
-                item = queue.pop(0)
-                try:
-                    await self._read_detail(tab, item)
-                except Exception as exc:
-                    item.notes.append(f"detail page could not be read ({type(exc).__name__})")
-
-        try:
-            await asyncio.gather(*(worker(tab) for tab in pages))
-        finally:
-            for tab in pages:
-                await tab.close()
-
-        for item in listings[MAX_PRODUCT_PAGES:]:
-            item.notes.append("category-card data only; detail page not opened")
-
-        stock_rank = {True: 0, None: 1, False: 2}
-        listings.sort(key=lambda item: (stock_rank.get(item.available, 1), item.price if item.price is not None else float("inf")))
-
-        elapsed = round(time.time() - t0_collect, 2)
-        m.total_seconds = elapsed
-        m.products_extracted = len(listings)
-        m.status = "ok" if listings else "no_results"
-        perf_monitor.log_supplier_completed(self.session_id, self.name)
-
-        return SearchOutcome(
-            vendor=self.name,
-            status="ok" if listings else "no_results",
-            vehicle_label=vehicle,
-            listings=[item.to_dict() for item in listings],
-            source_url=self.last_search_url or self.page.url,
-            elapsed_seconds=elapsed,
-        )

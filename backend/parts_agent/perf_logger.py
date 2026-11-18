@@ -35,11 +35,13 @@ class SupplierMetrics:
     category_selection_seconds: float = 0.0
     extraction_seconds: float = 0.0
     enrichment_seconds: float = 0.0
-    total_seconds: float = 0.0
+    total_seconds: Optional[float] = None
     products_extracted: int = 0
     failed_details_count: int = 0
     cache_hit: bool = False
     status: str = "pending"
+    error_category: Optional[str] = None
+    error_message: Optional[str] = None
 
     def format_report(self) -> str:
         lines = [
@@ -62,7 +64,14 @@ class SupplierMetrics:
         lines.append(f"Products: {self.products_extracted}")
         if self.failed_details_count > 0:
             lines.append(f"Failed details: {self.failed_details_count}")
-        lines.append(f"Total: {self.total_seconds:.1f}s")
+        if self.error_category:
+            lines.append(f"Error category: {self.error_category}")
+        if self.error_message:
+            lines.append(f"Error message: {self.error_message}")
+        if self.total_seconds is not None:
+            lines.append(f"Total: {self.total_seconds:.1f}s")
+        else:
+            lines.append("Total: unavailable")
         return "\n".join(lines)
 
 

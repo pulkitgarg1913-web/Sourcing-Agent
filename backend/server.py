@@ -704,6 +704,18 @@ async def start_chat(payload: StartRequest):
                     outcome = state.get("outcome") or {}
                     publish_completed_outcomes(thread_id, state)
                     summary = state.get("summary") or "Search completed."
+                    overall_status = outcome.get("status") or "completed"
+                    combined_count = len(outcome.get("listings") or [])
+
+                    if overall_status == "success":
+                        log.info("Session %s sourcing finished successfully with %d products", thread_id, combined_count)
+                    elif overall_status == "completed_no_results":
+                        log.info("Session %s sourcing completed with no matching products", thread_id)
+                    elif overall_status in ("partial_success", "partial_failure"):
+                        log.info("Session %s sourcing finished with %s (%d products)", thread_id, overall_status, combined_count)
+                    else:
+                        log.warning("Session %s sourcing finished with status '%s' (0 products)", thread_id, overall_status)
+
                     sse_manager.publish(
                         thread_id,
                         {
@@ -717,8 +729,9 @@ async def start_chat(payload: StartRequest):
                         thread_id,
                         {
                             "type": "complete",
-                            "combined_count": len(outcome.get("listings") or []),
+                            "combined_count": combined_count,
                             "total_elapsed": outcome.get("total_elapsed", 0.0),
+                            "status": overall_status,
                             "outcome": outcome,
                         },
                     )
@@ -813,12 +826,23 @@ async def reply_chat(payload: ReplyRequest):
                         },
                     )
                 else:
-                    log.info("Session %s sourcing finished successfully", thread_id)
                     # Collection and presentation completed!
                     save_run(thread_id, state)
                     outcome = state.get("outcome") or {}
                     publish_completed_outcomes(thread_id, state)
                     summary = state.get("summary") or "Search completed."
+                    overall_status = outcome.get("status") or "completed"
+                    combined_count = len(outcome.get("listings") or [])
+
+                    if overall_status == "success":
+                        log.info("Session %s sourcing finished successfully with %d products", thread_id, combined_count)
+                    elif overall_status == "completed_no_results":
+                        log.info("Session %s sourcing completed with no matching products", thread_id)
+                    elif overall_status in ("partial_success", "partial_failure"):
+                        log.info("Session %s sourcing finished with %s (%d products)", thread_id, overall_status, combined_count)
+                    else:
+                        log.warning("Session %s sourcing finished with status '%s' (0 products)", thread_id, overall_status)
+
                     sse_manager.publish(
                         thread_id,
                         {
@@ -832,8 +856,9 @@ async def reply_chat(payload: ReplyRequest):
                         thread_id,
                         {
                             "type": "complete",
-                            "combined_count": len(outcome.get("listings") or []),
+                            "combined_count": combined_count,
                             "total_elapsed": outcome.get("total_elapsed", 0.0),
+                            "status": overall_status,
                             "outcome": outcome,
                         },
                     )

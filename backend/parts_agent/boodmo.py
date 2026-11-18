@@ -31,6 +31,11 @@ from .perf_logger import perf_monitor
 
 log = logging.getLogger(__name__)
 
+
+class BoodmoBotProtectionError(RuntimeError):
+    """Raised when Boodmo displays a Cloudflare challenge, CAPTCHA, or 403/429 block."""
+    pass
+
 BASE = "https://boodmo.com"
 CATALOG_FILE = Path(__file__).resolve().parent.parent / "data" / "boodmo_catalog.json"
 if not CATALOG_FILE.exists():
@@ -162,6 +167,9 @@ class BoodmoAdapter:
         self._selected: Optional[tuple[str, str]] = None   # (label, page url)
         self._variant_dupes = 1
         self._using_search_fallback = False
+        self._is_blocked: bool = False
+        self._challenge_detected: bool = False
+        self._blocked_urls: set[str] = set()
 
     # ------------------------------------------------------------ lifecycle
 
@@ -212,6 +220,10 @@ class BoodmoAdapter:
         RETRY_TIMEOUT = int(os.environ.get("NAVIGATION_RETRY_TIMEOUT_SECONDS", "12000"))
         t0 = time.time()
 
+        if getattr(self, "_is_blocked", False) or url in getattr(self, "_blocked_urls", set()):
+            log.warning("Boodmo access is already blocked; skipping repeated navigation to %s", url)
+            raise BoodmoBotProtectionError(f"Boodmo access already blocked for {url}; skipping retry")
+
         for attempt in range(2):
             try:
                 await self.start()
@@ -219,6 +231,8 @@ class BoodmoAdapter:
                 wait_state = "domcontentloaded" if attempt == 0 else "commit"
                 await self.page.goto(url, wait_until=wait_state, timeout=timeout_ms)
                 break
+            except BoodmoBotProtectionError:
+                raise
             except Exception as exc:
                 err_msg = str(exc).lower()
                 is_crash = any(k in err_msg for k in ("crashed", "closed", "aborted", "detached", "context destroyed"))
@@ -231,6 +245,8 @@ class BoodmoAdapter:
                         if self.page:
                             await self.page.goto(url, wait_until="commit", timeout=RETRY_TIMEOUT)
                             break
+                    except BoodmoBotProtectionError:
+                        raise
                     except Exception as e2:
                         log.warning("Boodmo retry commit failed: %s", e2)
                 else:
@@ -251,16 +267,25 @@ class BoodmoAdapter:
                 combined = f"{title.lower()} {body_snippet.lower()}"
                 if any(w in combined for w in ("attention required! | cloudflare", "just a moment...", "turnstile", "verify you are human", "cf-challenge")):
                     log.warning("Boodmo bot-protection challenge detected at %s", url)
+                    self._is_blocked = True
+                    self._challenge_detected = True
+                    self._blocked_urls.add(url)
                     m = perf_monitor.get_metrics(self.session_id, self.name)
                     m.status = "blocked"
-                    raise RuntimeError(f"Boodmo bot-protection challenge encountered at {url}")
+                    m.error_category = "bot_protection_challenge"
+                    m.error_message = f"Bot-protection challenge encountered at {url}"
+                    raise BoodmoBotProtectionError(f"Boodmo bot-protection challenge encountered at {url}")
                 if any(w in combined for w in ("403 forbidden", "access denied", "error 403", "429 too many requests")):
                     log.warning("Boodmo access blocked (403/429) at %s", url)
+                    self._is_blocked = True
+                    self._blocked_urls.add(url)
                     m = perf_monitor.get_metrics(self.session_id, self.name)
                     m.status = "blocked"
-                    raise RuntimeError(f"Boodmo access denied (403/429) at {url}")
+                    m.error_category = "access_denied"
+                    m.error_message = f"Access denied (403/429) at {url}"
+                    raise BoodmoBotProtectionError(f"Boodmo access denied (403/429) at {url}")
             except Exception as chk_err:
-                if "challenge" in str(chk_err).lower() or "denied" in str(chk_err).lower():
+                if isinstance(chk_err, BoodmoBotProtectionError) or "challenge" in str(chk_err).lower() or "denied" in str(chk_err).lower():
                     raise
 
         m = perf_monitor.get_metrics(self.session_id, self.name)
@@ -513,14 +538,21 @@ class BoodmoAdapter:
         clean_model = model
         if make and model.lower().startswith(make.lower()):
             clean_model = model[len(make):].strip()
-        terms = [t for t in [make, clean_model, part] if t]
+        year = str(profile.year or profile.hints.get("year") or "").strip()
+        trim = str(profile.hints.get("trim") or "").strip()
+        if trim.lower() in ("standard", "other", "not sure", "other / not sure", "unknown", "*unknown*"):
+            trim = ""
+        terms = [t for t in [make, clean_model, year, trim, part] if t]
         query = " ".join(terms).strip()
+        if not query:
+            query = (getattr(profile, "requested_part", None) or profile.part or "auto parts").strip()
+            log.warning("Boodmo fallback query was empty; defaulted to '%s'", query)
         self.progress(f"Falling back to search for '{query}' on Boodmo")
         url = f"{BASE}/search/{urllib.parse.quote_plus(query)}/"
         await self._goto(url)
         await self._wait(800)
         self._using_search_fallback = True
-        self._selected = ("search_fallback", self.page.url)
+        self._selected = ("search_fallback", self.page.url if self.page else url)
 
     async def advance(self, profile: VehicleProfile) -> Optional[NeedInput]:
         """Push the vehicle selector as far as known values allow.
@@ -675,12 +707,42 @@ class BoodmoAdapter:
             self._advanced_ok = True
             return None
         q = variants.next_question(remaining, exclude=tuple(profile.variant_filters))
-        if q:
+        while q:
             attr, values = q
+            hint_val = profile.hints.get(attr)
+            if hint_val:
+                matched = variants.match_attr_value(attr, hint_val, set(values))
+                if matched:
+                    log.info("Boodmo auto-applying known hint %s='%s' (matched: %s)", attr, hint_val, matched)
+                    profile.variant_filters[attr] = matched
+                    remaining = variants.unique_labels(variants.apply_filters(labels, profile.variant_filters))
+                    if len(remaining) == 1:
+                        profile.variant = remaining[0]
+                        self.progress(f"Only one variant fits: {profile.variant}")
+                        await self._select_variant(profile.variant, labels)
+                        self._advanced_signature = sig
+                        self._advanced_ok = True
+                        return None
+                    q = variants.next_question(remaining, exclude=tuple(profile.variant_filters))
+                    continue
             return NeedInput(field="variant_attr", attr=attr, options=values,
                              question=variants.question_for(attr, values, remaining),
                              note=f"Boodmo lists {len(remaining)} {profile.model.title()} "
                                   f"{profile.year} variants." if not profile.variant_filters else None)
+
+        trim_hint = (profile.hints.get("trim") or "").strip().lower()
+        if trim_hint and trim_hint not in ("standard", "other", "not sure", "other / not sure", "unknown", "*unknown*"):
+            matched_variant = next(
+                (l for l in remaining if re.search(rf"\b{re.escape(trim_hint)}\b", l.lower())),
+                None
+            )
+            if matched_variant:
+                profile.variant = matched_variant
+                self.progress(f"Matched variant using trim '{trim_hint}': {profile.variant}")
+                await self._select_variant(profile.variant, labels)
+                self._advanced_signature = sig
+                self._advanced_ok = True
+                return None
         spoken = variants.describe_differences(remaining)
         listed = "; ".join(f"{i + 1}, {s}" for i, s in enumerate(spoken))
         return NeedInput(field="variant", options=remaining, spoken=spoken,
@@ -694,7 +756,8 @@ class BoodmoAdapter:
     async def _reselect(self, profile: VehicleProfile, occurrence: int):
         """Walk the selector again to reach another catalogue entry with the same label."""
         self._selected = None
-        await self._goto(BASE + self.category_href)
+        category_url = BASE + (self.category_href or "")
+        await self._goto(category_url)
         for key, value in (("maker", profile.maker), ("model", profile.model), ("year", profile.year)):
             await self._wait_options(key)
             await self._choose(key, value)
@@ -818,47 +881,336 @@ class BoodmoAdapter:
         don't appear under all of them as partial fits."""
         t0_collect = time.time()
         m = perf_monitor.get_metrics(self.session_id, self.name)
-        await self.start()
+        req_p = (getattr(profile, "requested_part", None) or profile.part or "").strip()
+        vehicle = " ".join(x for x in (profile.maker, profile.model, profile.year, profile.variant) if x) or "the requested vehicle"
 
-        if getattr(self, "_challenge_detected", False) or getattr(self, "_is_blocked", False):
-            elapsed = round(time.time() - t0_collect, 2)
-            m.total_seconds = elapsed
-            m.status = "challenge_detected"
-            perf_monitor.log_supplier_completed(self.session_id, self.name)
-            return SearchOutcome(
-                vendor=self.name,
-                status="challenge_detected",
-                vehicle_label=" ".join(x for x in (profile.maker, profile.model, profile.year, profile.variant) if x),
-                listings=[],
-                source_url=self.page.url if self.page else BASE,
-                message="Boodmo bot-protection challenge encountered; automated search safely skipped.",
-                elapsed_seconds=elapsed,
-            )
+        try:
+            await self.start()
 
-        # Guard against callers that invoke collect() without first calling advance().
-        if not self._advanced_ok and not getattr(self, "_using_search_fallback", False):
-            need = await self.advance(profile)
-            if need:
+            if getattr(self, "_challenge_detected", False) or getattr(self, "_is_blocked", False):
                 elapsed = round(time.time() - t0_collect, 2)
-                outcome = SearchOutcome(
+                m.total_seconds = elapsed
+                m.status = "blocked"
+                m.error_category = "bot_protection_challenge"
+                m.error_message = "Boodmo bot-protection challenge encountered; automated search safely skipped."
+                perf_monitor.log_supplier_completed(self.session_id, self.name)
+                return SearchOutcome(
                     vendor=self.name,
-                    status="failed",
-                    vehicle_label=" ".join(x for x in (profile.maker, profile.model, profile.year, profile.variant) if x),
+                    status="blocked",
+                    vehicle_label=vehicle,
                     listings=[],
                     source_url=self.page.url if self.page else BASE,
-                    message=need.question,
+                    message="Boodmo bot-protection challenge encountered; automated search safely skipped.",
+                    elapsed_seconds=elapsed,
+                    error="bot_protection_challenge",
+                )
+
+            # Guard against callers that invoke collect() without first calling advance().
+            if not self._advanced_ok and not getattr(self, "_using_search_fallback", False):
+                need = await self.advance(profile)
+                if need:
+                    known_car = bool((profile.maker or profile.hints.get("make")) and (profile.model or profile.hints.get("model")))
+                    if known_car:
+                        log.info("Boodmo collect encountered need %s on known vehicle; falling back to direct search bar", need.field)
+                        await self._search_fallback(profile)
+                    else:
+                        elapsed = round(time.time() - t0_collect, 2)
+                        outcome = SearchOutcome(
+                            vendor=self.name,
+                            status="failed",
+                            vehicle_label=vehicle,
+                            listings=[],
+                            source_url=self.page.url if self.page else BASE,
+                            message=need.question,
+                            elapsed_seconds=elapsed,
+                            clarification_required=True,
+                            missing_fields=[need.field],
+                            error="need_input",
+                        )
+                        m.total_seconds = elapsed
+                        m.status = outcome.status
+                        perf_monitor.log_supplier_completed(self.session_id, self.name)
+                        return outcome
+
+            if getattr(self, "_using_search_fallback", False):
+                vehicle = f"{profile.maker or profile.hints.get('make') or ''} {profile.model or profile.hints.get('model') or ''}".strip() or "the requested vehicle"
+                source_url = self.page.url if self.page else None
+                tiles = await self._read_tiles()
+                if not tiles:
+                    clean_model = (profile.model or profile.hints.get("model") or "").strip()
+                    make = (profile.maker or profile.hints.get("make") or "").strip()
+                    if make and clean_model.lower().startswith(make.lower()):
+                        clean_model = clean_model[len(make):].strip()
+                    part = (profile.part or profile.category or "").strip()
+
+                    candidate_queries = []
+                    if clean_model and part:
+                        candidate_queries.append(f"{clean_model} {part}")
+                    if clean_model and profile.category and profile.category != part:
+                        candidate_queries.append(f"{clean_model} {profile.category}")
+                    if part and part != "part":
+                        candidate_queries.append(part)
+
+                    import urllib.parse
+                    for cand_query in candidate_queries:
+                        if tiles:
+                            break
+                        self.progress(f"Refining search to '{cand_query}' on Boodmo")
+                        url = f"{BASE}/search/{urllib.parse.quote_plus(cand_query)}/"
+                        await self._goto(url)
+                        await self._wait(1200)
+                        tiles = await self._read_tiles()
+
+                if not tiles and ("/part-" in (self.page.url if self.page else "")):
+                    try:
+                        title = await self.page.locator("h1").inner_text()
+                        price_loc = self.page.locator(".product-price__current, [class*='price__current']").first
+                        price_text = await price_loc.inner_text() if await price_loc.count() else None
+                        tiles = [{
+                            "title": title.strip(),
+                            "price": price_text,
+                            "mrp": None,
+                            "brand": profile.maker or "",
+                            "number": "",
+                            "href": self.page.url.replace(BASE, "")
+                        }]
+                    except Exception:
+                        pass
+                listings: list[Listing] = []
+                for t in tiles:
+                    clean_t = (t.get("title") or "").strip()
+                    raw_b = t.get("brand") or profile.maker or ""
+                    compat_status, _ = relevance.check_vehicle_compatibility(
+                        product_title=clean_t,
+                        product_brand=raw_b,
+                        target_maker=profile.maker or "",
+                        target_model=profile.model or "",
+                    )
+                    if compat_status == "incompatible":
+                        continue
+                    req_p = profile.part or profile.hints.get("raw_request") or ""
+                    if req_p:
+                        part_status, _ = relevance.check_part_family_compatibility(
+                            product_title=clean_t,
+                            requested_part=req_p,
+                            category=profile.category or "",
+                        )
+                        if part_status == relevance.WRONG_PART_TYPE:
+                            continue
+
+                    number, item_id = _part_number(t.get("href") or "", t.get("number") or "")
+                    listing = Listing(
+                        title=clean_t, brand=raw_b, part_number=number,
+                        price=_price(t.get("price")), mrp=_price(t.get("mrp")), url=BASE + (t.get("href") or ""),
+                        fitment="unverified",
+                        fitment_basis=f"Boodmo keyword search bar fallback for '{vehicle}'",
+                    )
+                    if "..." in number:
+                        listing.notes.append(f"Boodmo masks the full part number; item id {item_id}")
+                    listings.append(listing)
+                elapsed = round(time.time() - t0_collect, 2)
+                m.total_seconds = elapsed
+                m.products_extracted = len(listings)
+                m.status = "ok" if listings else "no_results"
+                perf_monitor.log_supplier_completed(self.session_id, self.name)
+                return SearchOutcome(
+                    vendor=self.name,
+                    status="ok" if listings else "no_results",
+                    vehicle_label=vehicle,
+                    listings=[l.to_dict() if hasattr(l, "to_dict") else l for l in listings],
+                    source_url=source_url,
+                    message=f"Boodmo search bar found {len(listings)} listings for {vehicle}." if listings else f"Boodmo search bar found no listings for {vehicle}.",
                     elapsed_seconds=elapsed,
                 )
-                m.total_seconds = elapsed
-                m.status = outcome.status
-                perf_monitor.log_supplier_completed(self.session_id, self.name)
-                return outcome
 
-        if getattr(self, "_using_search_fallback", False):
-            vehicle = f"{profile.maker or profile.hints.get('make') or ''} {profile.model or profile.hints.get('model') or ''}".strip() or "the requested vehicle"
-            source_url = self.page.url if self.page else None
-            tiles = await self._read_tiles()
-            if not tiles:
+            dupes = self._variant_dupes
+            vehicle = f"{profile.maker} {profile.model} {profile.year} {profile.variant}"
+            seen: dict = {}
+            source_url = None
+            try:
+                for occ in range(dupes):
+                    page_url = self.page.url if self.page else ""
+                    if occ or self._selected != (profile.variant, page_url):
+                        await self._reselect(profile, occ)
+                    source_url = source_url or (self.page.url if self.page else "")
+                    self.progress(f"Reading {profile.category} listings for {vehicle}"
+                                  + (f" (catalogue entry {occ + 1} of {dupes})" if dupes > 1 else ""))
+                    for t in await self._read_tiles():
+                        if not t.get("href"):
+                            continue
+                        key = t["href"]
+                        if key not in seen:
+                            seen[key] = {"tile": t, "hits": 0}
+                        seen[key]["hits"] += 1
+            except Exception as exc:
+                log.warning("Boodmo catalogue walk failed (%s); falling back to direct search", exc)
+                await self._search_fallback(profile)
+                await self._wait(1200)
+                tiles = await self._read_tiles()
+                listings = []
+                for t in tiles:
+                    clean_t = (t.get("title") or "").strip()
+                    raw_b = t.get("brand") or profile.maker or ""
+                    compat_status, _ = relevance.check_vehicle_compatibility(
+                        product_title=clean_t,
+                        product_brand=raw_b,
+                        target_maker=profile.maker or "",
+                        target_model=profile.model or "",
+                    )
+                    if compat_status == "incompatible":
+                        continue
+                    req_p = profile.part or profile.hints.get("raw_request") or ""
+                    if req_p:
+                        part_status, _ = relevance.check_part_family_compatibility(
+                            product_title=clean_t,
+                            requested_part=req_p,
+                            category=profile.category or "",
+                        )
+                        if part_status == relevance.WRONG_PART_TYPE:
+                            continue
+
+                    number, item_id = _part_number(t.get("href") or "", t.get("number") or "")
+                    listing = Listing(
+                        title=clean_t, brand=raw_b, part_number=number,
+                        price=_price(t.get("price")), mrp=_price(t.get("mrp")), url=BASE + (t.get("href") or ""),
+                        fitment="unverified",
+                        fitment_basis=f"Boodmo keyword search bar fallback for '{vehicle}'",
+                    )
+                    if "..." in number:
+                        listing.notes.append(f"Boodmo masks the full part number; item id {item_id}")
+                    listings.append(listing)
+                elapsed = round(time.time() - t0_collect, 2)
+                m.total_seconds = elapsed
+                m.products_extracted = len(listings)
+                m.status = "ok" if listings else "no_results"
+                perf_monitor.log_supplier_completed(self.session_id, self.name)
+                return SearchOutcome(
+                    vendor=self.name,
+                    status="ok" if listings else "no_results",
+                    vehicle_label=vehicle,
+                    listings=[l.to_dict() if hasattr(l, "to_dict") else l for l in listings],
+                    source_url=self.page.url if self.page else None,
+                    message=f"Boodmo search bar found {len(listings)} listings for {vehicle}." if listings else f"Boodmo search bar found no listings for {vehicle}.",
+                    elapsed_seconds=elapsed,
+                )
+
+            listings: list[Listing] = []
+            for href, rec in seen.items():
+                t = rec["tile"]
+                clean_t = (t.get("title") or "").strip()
+                raw_b = t.get("brand") or ""
+                compat_status, _ = relevance.check_vehicle_compatibility(
+                    product_title=clean_t,
+                    product_brand=raw_b,
+                    target_maker=profile.maker or "",
+                    target_model=profile.model or "",
+                )
+                if compat_status == "incompatible":
+                    continue
+                req_p = profile.part or profile.hints.get("raw_request") or ""
+                if req_p:
+                    part_status, _ = relevance.check_part_family_compatibility(
+                        product_title=clean_t,
+                        requested_part=req_p,
+                        category=profile.category or "",
+                    )
+                    if part_status == relevance.WRONG_PART_TYPE:
+                        continue
+
+                number, item_id = _part_number(href, t.get("number") or "")
+                full = rec["hits"] == max(dupes, 1)
+                listing = Listing(
+                    title=clean_t, brand=raw_b, part_number=number,
+                    price=_price(t.get("price")), mrp=_price(t.get("mrp")), url=BASE + href,
+                    fitment="verified" if full else "partial",
+                    fitment_basis=(f"Boodmo fitment filter: {vehicle}" if full else
+                                   f"listed under {rec['hits']} of {dupes} Boodmo entries named '{profile.variant}'"),
+                    vendor="boodmo",
+                    supplier="Boodmo",
+                    supplier_name="Boodmo",
+                    seller="Authorized Supplier Hub",
+                    dispatch="24–48 hours",
+                )
+                if "..." in number:
+                    listing.notes.append(f"Boodmo masks the full part number; item id {item_id}")
+                listings.append(listing)
+
+            if not listings:
+                # Multi-category fallback: if primary category returned 0 parts,
+                # locate it in other candidate categories from the Boodmo catalogue
+                alternates = list(profile.hints.get("alternate_categories") or [])
+                catalog = _load_catalog()
+                cat_map = catalog.get("categories", {})
+                checked_categories = [profile.category]
+
+                current_url = self.page.url
+                # Detect vehicle suffix if present in URL: e.g. /catalog/1234-slug/<vehicle_suffix>
+                vehicle_suffix = ""
+                if self.category_href and self.category_href in current_url:
+                    parts_after = current_url.split(self.category_href, 1)
+                    if len(parts_after) > 1 and parts_after[1].strip("/"):
+                        vehicle_suffix = parts_after[1].lstrip("/")
+
+                while alternates and not listings:
+                    alt_cat = alternates.pop(0)
+                    if alt_cat in checked_categories:
+                        continue
+                    checked_categories.append(alt_cat)
+                    if req_p:
+                        part_status, _ = relevance.check_part_family_compatibility(
+                            product_title=alt_cat,
+                            requested_part=req_p,
+                        )
+                        if part_status == relevance.WRONG_PART_TYPE:
+                            continue
+                    alt_href = cat_map.get(alt_cat)
+                    if not alt_href:
+                        continue
+
+                    target_url = f"{BASE}{alt_href}{vehicle_suffix}"
+                    self.progress(f"No parts under {profile.category}; checking alternate category '{alt_cat}'")
+                    try:
+                        await self._goto(target_url)
+                        alt_tiles = await self._read_tiles()
+                        if alt_tiles:
+                            for t in alt_tiles:
+                                if not t.get("href"):
+                                    continue
+                                clean_t = (t.get("title") or "").strip()
+                                if req_p:
+                                    part_status, _ = relevance.check_part_family_compatibility(
+                                        product_title=clean_t,
+                                        requested_part=req_p,
+                                        category=alt_cat,
+                                    )
+                                    if part_status == relevance.WRONG_PART_TYPE:
+                                        continue
+                                href = t["href"]
+                                if href not in seen:
+                                    seen[href] = {"tile": t, "hits": 1}
+                                    number, item_id = _part_number(href, t.get("number") or "")
+                                    listing = Listing(
+                                        title=clean_t, brand=t.get("brand") or "", part_number=number,
+                                        price=_price(t.get("price")), mrp=_price(t.get("mrp")), url=BASE + href,
+                                        fitment="verified",
+                                        fitment_basis=f"Boodmo fitment filter: {vehicle} (under {alt_cat})",
+                                    )
+                                    if "..." in number:
+                                        listing.notes.append(f"Boodmo masks the full part number; item id {item_id}")
+                                    listings.append(listing)
+                            if listings:
+                                profile.hints["resolved_alternate_category"] = alt_cat
+                                source_url = self.page.url
+                                break
+                    except Exception as exc:
+                        log.warning("Could not check alternate Boodmo category '%s': %s", alt_cat, exc)
+
+            if not listings and not getattr(self, "_using_search_fallback", False):
+                self.progress(f"No listings under Boodmo catalogue for {profile.category}; searching Boodmo for '{vehicle}'")
+                await self._search_fallback(profile)
+                await self._wait(1200)
+                tiles = await self._read_tiles()
+
                 clean_model = (profile.model or profile.hints.get("model") or "").strip()
                 make = (profile.maker or profile.hints.get("make") or "").strip()
                 if make and clean_model.lower().startswith(make.lower()):
@@ -883,332 +1235,141 @@ class BoodmoAdapter:
                     await self._wait(1200)
                     tiles = await self._read_tiles()
 
-            if not tiles and ("/part-" in (self.page.url if self.page else "")):
-                try:
-                    title = await self.page.locator("h1").inner_text()
-                    price_loc = self.page.locator(".product-price__current, [class*='price__current']").first
-                    price_text = await price_loc.inner_text() if await price_loc.count() else None
-                    tiles = [{
-                        "title": title.strip(),
-                        "price": price_text,
-                        "mrp": None,
-                        "brand": profile.maker or "",
-                        "number": "",
-                        "href": self.page.url.replace(BASE, "")
-                    }]
-                except Exception:
-                    pass
-            listings: list[Listing] = []
-            for t in tiles:
-                clean_t = (t.get("title") or "").strip()
-                raw_b = t.get("brand") or profile.maker or ""
-                compat_status, _ = relevance.check_vehicle_compatibility(
-                    product_title=clean_t,
-                    product_brand=raw_b,
-                    target_maker=profile.maker or "",
-                    target_model=profile.model or "",
-                )
-                if compat_status == "incompatible":
-                    continue
-                req_p = profile.part or profile.hints.get("raw_request") or ""
-                if req_p:
-                    part_status, _ = relevance.check_part_family_compatibility(
-                        product_title=clean_t,
-                        requested_part=req_p,
-                        category=profile.category or "",
-                    )
-                    if part_status == relevance.WRONG_PART_TYPE:
-                        continue
+                if not tiles and ("/part-" in (self.page.url if self.page else "")):
+                    try:
+                        title = await self.page.locator("h1").inner_text()
+                        price_loc = self.page.locator(".product-price__current, [class*='price__current']").first
+                        price_text = await price_loc.inner_text() if await price_loc.count() else None
+                        tiles = [{
+                            "title": title.strip(),
+                            "price": price_text,
+                            "mrp": None,
+                            "brand": profile.maker or "",
+                            "number": "",
+                            "href": self.page.url.replace(BASE, "")
+                        }]
+                    except Exception:
+                        pass
 
-                number, item_id = _part_number(t.get("href") or "", t.get("number") or "")
-                listing = Listing(
-                    title=clean_t, brand=raw_b, part_number=number,
-                    price=_price(t.get("price")), mrp=_price(t.get("mrp")), url=BASE + (t.get("href") or ""),
-                    fitment="unverified",
-                    fitment_basis=f"Boodmo keyword search bar fallback for '{vehicle}'",
-                )
-                if "..." in number:
-                    listing.notes.append(f"Boodmo masks the full part number; item id {item_id}")
-                listings.append(listing)
+                for t in tiles:
+                    clean_t = (t.get("title") or "").strip()
+                    if req_p:
+                        part_status, _ = relevance.check_part_family_compatibility(
+                            product_title=clean_t,
+                            requested_part=req_p,
+                            category=profile.category or "",
+                        )
+                        if part_status == relevance.WRONG_PART_TYPE:
+                            continue
+                    number, item_id = _part_number(t.get("href") or "", t.get("number") or "")
+                    listing = Listing(
+                        title=clean_t, brand=t.get("brand") or profile.maker or "", part_number=number,
+                        price=_price(t.get("price")), mrp=_price(t.get("mrp")), url=BASE + (t.get("href") or ""),
+                        fitment="unverified",
+                        fitment_basis=f"Boodmo keyword search bar fallback for '{vehicle}'",
+                    )
+                    if "..." in number:
+                        listing.notes.append(f"Boodmo masks the full part number; item id {item_id}")
+                    listings.append(listing)
+                if listings:
+                    source_url = self.page.url if self.page else source_url
+
+            if not listings:
+                elapsed = round(time.time() - t0_collect, 2)
+                m.total_seconds = elapsed
+                m.products_extracted = 0
+                m.status = "no_results"
+                perf_monitor.log_supplier_completed(self.session_id, self.name)
+                checked_str = ", ".join(checked_categories)
+                return SearchOutcome(vendor="boodmo", status="no_results", vehicle_label=vehicle,
+                                     listings=[], source_url=source_url,
+                                     message=f"This part is not listed in Boodmo's catalogue for {vehicle}. (Checked categories: {checked_str})",
+                                     elapsed_seconds=elapsed,
+                                     raw_count=0, raw_listings=[])
+
+            # Product pages: seller offers, stock, part class. Tiles without a price have
+            # no seller offer, so only priced ones are opened, a few tabs at a time.
+            priced = sorted((l for l in listings if l.price is not None), key=lambda l: l.price)
+            for l in listings:
+                if l.price is None:
+                    l.available = False
+            to_check, unchecked = priced[:ENRICH_LIMIT], priced[ENRICH_LIMIT:]
+            if to_check:
+                self.progress(f"Checking sellers and stock on {len(to_check)} product pages")
+                pages = [await self.page.context.new_page() for _ in range(min(ENRICH_TABS, len(to_check)))]
+                queue: asyncio.Queue = asyncio.Queue()
+                for l in to_check:
+                    queue.put_nowait(l)
+
+                async def worker(pg: Page):
+                    while not queue.empty():
+                        l = queue.get_nowait()
+                        try:
+                            await self._enrich(pg, l, profile.category)
+                        except Exception as e:
+                            l.notes.append(f"could not open product page ({type(e).__name__}); stock not checked")
+                try:
+                    await asyncio.gather(*(worker(pg) for pg in pages))
+                finally:
+                    for pg in pages:
+                        await pg.close()
+            for l in unchecked:
+                l.notes.append("listed price only; seller stock not checked")
+
+            # In stock first, then unchecked, then unavailable; exact parts before related ones.
+            rank = {True: 0, None: 1, False: 2}
+            listings.sort(key=lambda l: (rank[l.available], l.match != "exact", l.fitment != "verified",
+                                         l.price or 1e12))
             elapsed = round(time.time() - t0_collect, 2)
             m.total_seconds = elapsed
             m.products_extracted = len(listings)
-            m.status = "ok" if listings else "no_results"
+            m.status = "ok"
             perf_monitor.log_supplier_completed(self.session_id, self.name)
-            return SearchOutcome(
-                vendor=self.name,
-                status="ok" if listings else "no_results",
-                vehicle_label=vehicle,
-                listings=[l.to_dict() if hasattr(l, "to_dict") else l for l in listings],
-                source_url=source_url,
-                message=f"Boodmo search bar found {len(listings)} listings for {vehicle}." if listings else f"Boodmo search bar found no listings for {vehicle}.",
-                elapsed_seconds=elapsed,
-            )
-
-        dupes = self._variant_dupes
-        vehicle = f"{profile.maker} {profile.model} {profile.year} {profile.variant}"
-        seen: dict = {}
-        source_url = None
-        try:
-            for occ in range(dupes):
-                page_url = self.page.url if self.page else ""
-                if occ or self._selected != (profile.variant, page_url):
-                    await self._reselect(profile, occ)
-                source_url = source_url or (self.page.url if self.page else "")
-                self.progress(f"Reading {profile.category} listings for {vehicle}"
-                              + (f" (catalogue entry {occ + 1} of {dupes})" if dupes > 1 else ""))
-                for t in await self._read_tiles():
-                    if not t.get("href"):
-                        continue
-                    key = t["href"]
-                    if key not in seen:
-                        seen[key] = {"tile": t, "hits": 0}
-                    seen[key]["hits"] += 1
-        except Exception as exc:
-            log.warning("Boodmo catalogue walk failed (%s); falling back to direct search", exc)
-            await self._search_fallback(profile)
-            await self._wait(1200)
-            tiles = await self._read_tiles()
-            listings = []
-            for t in tiles:
-                clean_t = (t.get("title") or "").strip()
-                raw_b = t.get("brand") or profile.maker or ""
-                compat_status, _ = relevance.check_vehicle_compatibility(
-                    product_title=clean_t,
-                    product_brand=raw_b,
-                    target_maker=profile.maker or "",
-                    target_model=profile.model or "",
-                )
-                if compat_status == "incompatible":
-                    continue
-                req_p = profile.part or profile.hints.get("raw_request") or ""
-                if req_p:
-                    part_status, _ = relevance.check_part_family_compatibility(
-                        product_title=clean_t,
-                        requested_part=req_p,
-                        category=profile.category or "",
-                    )
-                    if part_status == relevance.WRONG_PART_TYPE:
-                        continue
-
-                number, item_id = _part_number(t.get("href") or "", t.get("number") or "")
-                listing = Listing(
-                    title=clean_t, brand=raw_b, part_number=number,
-                    price=_price(t.get("price")), mrp=_price(t.get("mrp")), url=BASE + (t.get("href") or ""),
-                    fitment="unverified",
-                    fitment_basis=f"Boodmo keyword search bar fallback for '{vehicle}'",
-                )
-                if "..." in number:
-                    listing.notes.append(f"Boodmo masks the full part number; item id {item_id}")
-                listings.append(listing)
-            return SearchOutcome(
-                vendor=self.name,
-                status="ok" if listings else "no_results",
-                vehicle_label=vehicle,
-                listings=[l.to_dict() if hasattr(l, "to_dict") else l for l in listings],
-                source_url=self.page.url if self.page else None,
-                message=f"Boodmo search bar found {len(listings)} listings for {vehicle}." if listings else f"Boodmo search bar found no listings for {vehicle}."
-            )
-
-        listings: list[Listing] = []
-        for href, rec in seen.items():
-            t = rec["tile"]
-            clean_t = (t.get("title") or "").strip()
-            raw_b = t.get("brand") or ""
-            compat_status, _ = relevance.check_vehicle_compatibility(
-                product_title=clean_t,
-                product_brand=raw_b,
-                target_maker=profile.maker or "",
-                target_model=profile.model or "",
-            )
-            if compat_status == "incompatible":
-                continue
-            req_p = profile.part or profile.hints.get("raw_request") or ""
-            if req_p:
-                part_status, _ = relevance.check_part_family_compatibility(
-                    product_title=clean_t,
-                    requested_part=req_p,
-                    category=profile.category or "",
-                )
-                if part_status == relevance.WRONG_PART_TYPE:
-                    continue
-
-            number, item_id = _part_number(href, t.get("number") or "")
-            full = rec["hits"] == max(dupes, 1)
-            listing = Listing(
-                title=clean_t, brand=raw_b, part_number=number,
-                price=_price(t.get("price")), mrp=_price(t.get("mrp")), url=BASE + href,
-                fitment="verified" if full else "partial",
-                fitment_basis=(f"Boodmo fitment filter: {vehicle}" if full else
-                               f"listed under {rec['hits']} of {dupes} Boodmo entries named '{profile.variant}'"),
-                vendor="boodmo",
-                supplier="Boodmo",
-                supplier_name="Boodmo",
-                seller="Authorized Supplier Hub",
-                dispatch="24–48 hours",
-            )
-            if "..." in number:
-                listing.notes.append(f"Boodmo masks the full part number; item id {item_id}")
-            listings.append(listing)
-
-        if not listings:
-            # Multi-category fallback: if primary category returned 0 parts,
-            # locate it in other candidate categories from the Boodmo catalogue
-            alternates = list(profile.hints.get("alternate_categories") or [])
-            catalog = _load_catalog()
-            cat_map = catalog.get("categories", {})
-            checked_categories = [profile.category]
-
-            current_url = self.page.url
-            # Detect vehicle suffix if present in URL: e.g. /catalog/1234-slug/<vehicle_suffix>
-            vehicle_suffix = ""
-            if self.category_href and self.category_href in current_url:
-                parts_after = current_url.split(self.category_href, 1)
-                if len(parts_after) > 1 and parts_after[1].strip("/"):
-                    vehicle_suffix = parts_after[1].lstrip("/")
-
-            while alternates and not listings:
-                alt_cat = alternates.pop(0)
-                if alt_cat in checked_categories:
-                    continue
-                checked_categories.append(alt_cat)
-                alt_href = cat_map.get(alt_cat)
-                if not alt_href:
-                    continue
-
-                target_url = f"{BASE}{alt_href}{vehicle_suffix}"
-                self.progress(f"No parts under {profile.category}; checking alternate category '{alt_cat}'")
-                try:
-                    await self._goto(target_url)
-                    alt_tiles = await self._read_tiles()
-                    if alt_tiles:
-                        for t in alt_tiles:
-                            if not t.get("href"):
-                                continue
-                            href = t["href"]
-                            if href not in seen:
-                                seen[href] = {"tile": t, "hits": 1}
-                                number, item_id = _part_number(href, t.get("number") or "")
-                                listing = Listing(
-                                    title=(t.get("title") or "").strip(), brand=t.get("brand") or "", part_number=number,
-                                    price=_price(t.get("price")), mrp=_price(t.get("mrp")), url=BASE + href,
-                                    fitment="verified",
-                                    fitment_basis=f"Boodmo fitment filter: {vehicle} (under {alt_cat})",
-                                )
-                                if "..." in number:
-                                    listing.notes.append(f"Boodmo masks the full part number; item id {item_id}")
-                                listings.append(listing)
-                        if listings:
-                            profile.hints["resolved_alternate_category"] = alt_cat
-                            source_url = self.page.url
-                            break
-                except Exception as exc:
-                    log.warning("Could not check alternate Boodmo category '%s': %s", alt_cat, exc)
-
-        if not listings and not getattr(self, "_using_search_fallback", False):
-            self.progress(f"No listings under Boodmo catalogue for {profile.category}; searching Boodmo for '{vehicle}'")
-            await self._search_fallback(profile)
-            await self._wait(1200)
-            tiles = await self._read_tiles()
-
-            clean_model = (profile.model or profile.hints.get("model") or "").strip()
-            make = (profile.maker or profile.hints.get("make") or "").strip()
-            if make and clean_model.lower().startswith(make.lower()):
-                clean_model = clean_model[len(make):].strip()
-            part = (profile.part or profile.category or "").strip()
-
-            candidate_queries = []
-            if clean_model and part:
-                candidate_queries.append(f"{clean_model} {part}")
-            if clean_model and profile.category and profile.category != part:
-                candidate_queries.append(f"{clean_model} {profile.category}")
-            if part and part != "part":
-                candidate_queries.append(part)
-
-            import urllib.parse
-            for cand_query in candidate_queries:
-                if tiles:
-                    break
-                self.progress(f"Refining search to '{cand_query}' on Boodmo")
-                url = f"{BASE}/search/{urllib.parse.quote_plus(cand_query)}/"
-                await self._goto(url)
-                await self._wait(1200)
-                tiles = await self._read_tiles()
-
-            if not tiles and ("/part-" in (self.page.url if self.page else "")):
-                try:
-                    title = await self.page.locator("h1").inner_text()
-                    price_loc = self.page.locator(".product-price__current, [class*='price__current']").first
-                    price_text = await price_loc.inner_text() if await price_loc.count() else None
-                    tiles = [{
-                        "title": title.strip(),
-                        "price": price_text,
-                        "mrp": None,
-                        "brand": profile.maker or "",
-                        "number": "",
-                        "href": self.page.url.replace(BASE, "")
-                    }]
-                except Exception:
-                    pass
-
-            for t in tiles:
-                number, item_id = _part_number(t.get("href") or "", t.get("number") or "")
-                listing = Listing(
-                    title=(t.get("title") or "").strip(), brand=t.get("brand") or profile.maker or "", part_number=number,
-                    price=_price(t.get("price")), mrp=_price(t.get("mrp")), url=BASE + (t.get("href") or ""),
-                    fitment="unverified",
-                    fitment_basis=f"Boodmo keyword search bar fallback for '{vehicle}'",
-                )
-                if "..." in number:
-                    listing.notes.append(f"Boodmo masks the full part number; item id {item_id}")
-                listings.append(listing)
-            if listings:
-                source_url = self.page.url if self.page else source_url
-
-        if not listings:
-            checked_str = ", ".join(checked_categories)
-            return SearchOutcome(vendor="boodmo", status="no_results", vehicle_label=vehicle,
-                                 listings=[], source_url=source_url,
-                                 message=f"This part is not listed in Boodmo's catalogue for {vehicle}. (Checked categories: {checked_str})")
-
-        # Product pages: seller offers, stock, part class. Tiles without a price have
-        # no seller offer, so only priced ones are opened, a few tabs at a time.
-        priced = sorted((l for l in listings if l.price is not None), key=lambda l: l.price)
-        for l in listings:
-            if l.price is None:
-                l.available = False
-        to_check, unchecked = priced[:ENRICH_LIMIT], priced[ENRICH_LIMIT:]
-        if to_check:
-            self.progress(f"Checking sellers and stock on {len(to_check)} product pages")
-            pages = [await self.page.context.new_page() for _ in range(min(ENRICH_TABS, len(to_check)))]
-            queue: asyncio.Queue = asyncio.Queue()
-            for l in to_check:
-                queue.put_nowait(l)
-
-            async def worker(pg: Page):
-                while not queue.empty():
-                    l = queue.get_nowait()
-                    try:
-                        await self._enrich(pg, l, profile.category)
-                    except Exception as e:
-                        l.notes.append(f"could not open product page ({type(e).__name__}); stock not checked")
+            return SearchOutcome(vendor="boodmo", status="ok", vehicle_label=vehicle,
+                                 listings=[l.to_dict() for l in listings], source_url=source_url,
+                                 elapsed_seconds=elapsed,
+                                 raw_count=len(listings),
+                                 raw_listings=[l.to_dict() for l in listings])
+        except BoodmoBotProtectionError as bpe:
+            elapsed = round(time.time() - t0_collect, 2)
+            m.total_seconds = elapsed
+            m.status = "blocked"
+            m.error_category = "bot_protection_challenge"
+            m.error_message = str(bpe)
+            perf_monitor.log_supplier_completed(self.session_id, self.name)
             try:
-                await asyncio.gather(*(worker(pg) for pg in pages))
-            finally:
-                for pg in pages:
-                    await pg.close()
-        for l in unchecked:
-            l.notes.append("listed price only; seller stock not checked")
-
-        # In stock first, then unchecked, then unavailable; exact parts before related ones.
-        rank = {True: 0, None: 1, False: 2}
-        listings.sort(key=lambda l: (rank[l.available], l.match != "exact", l.fitment != "verified",
-                                     l.price or 1e12))
-        elapsed = round(time.time() - t0_collect, 2)
-        m.total_seconds = elapsed
-        m.products_extracted = len(listings)
-        m.status = "ok"
-        perf_monitor.log_supplier_completed(self.session_id, self.name)
-        return SearchOutcome(vendor="boodmo", status="ok", vehicle_label=vehicle,
-                             listings=[l.to_dict() for l in listings], source_url=source_url,
-                             elapsed_seconds=elapsed)
+                await self.close()
+            except Exception:
+                pass
+            return SearchOutcome(
+                vendor=self.name,
+                status="blocked",
+                vehicle_label=vehicle,
+                listings=[],
+                source_url=getattr(self.page, "url", BASE) if self.page else BASE,
+                message="Boodmo bot-protection challenge encountered; automated search safely skipped.",
+                elapsed_seconds=elapsed,
+                error="bot_protection_challenge",
+            )
+        except Exception as exc:
+            elapsed = round(time.time() - t0_collect, 2)
+            m.total_seconds = elapsed
+            m.status = "failed"
+            m.error_category = type(exc).__name__
+            m.error_message = str(exc)
+            log.exception("Boodmo collect failed: %s", exc)
+            perf_monitor.log_supplier_completed(self.session_id, self.name)
+            try:
+                await self.close()
+            except Exception:
+                pass
+            return SearchOutcome(
+                vendor=self.name,
+                status="failed",
+                vehicle_label=vehicle,
+                listings=[],
+                source_url=getattr(self.page, "url", BASE) if self.page else BASE,
+                message=f"Boodmo search failed: {exc}",
+                elapsed_seconds=elapsed,
+                error=type(exc).__name__,
+            )

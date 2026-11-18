@@ -695,9 +695,10 @@ async def collect(state: State, config) -> State:
             for listing in vo.get("listings", [])
         ]
         ranked = relevance.rank_listings(all_listings, price_order="asc")
+        cache_status = compute_overall_status(vendor_outcomes) if vendor_outcomes else ("success" if ranked else "completed_no_results")
 
         return _profile_updates(profiles) | {"outcome": {
-            "status": "ok",
+            "status": cache_status,
             "vehicle_label": " ".join(x for x in (
                 profile.maker, profile.model, profile.year, profile.variant,
             ) if x),
@@ -712,24 +713,42 @@ async def collect(state: State, config) -> State:
 
     async def collect_vendor(adapter, vendor_profile: VehicleProfile):
         t0 = time.time()
+        m = perf_monitor.get_metrics(adapter.session_id, adapter.name)
         try:
             res = await adapter.collect(vendor_profile)
             if not getattr(res, "elapsed_seconds", 0.0):
                 res.elapsed_seconds = round(time.time() - t0, 2)
+            m.total_seconds = res.elapsed_seconds
+            m.status = res.status
+            m.products_extracted = len(res.listings) if res.listings else 0
+            if getattr(res, "error", None):
+                m.error_category = res.error
             return res
         except Exception as e:
             elapsed = round(time.time() - t0, 2)
             log.exception("%s collection failed", adapter.name)
             err_str = str(e).lower()
-            if any(k in err_str for k in ("challenge", "cloudflare", "turnstile", "verify you are human")):
-                status = "challenge_detected"
+            if any(k in err_str for k in ("challenge", "cloudflare", "turnstile", "verify you are human", "bot-protection")):
+                status = "blocked"
+                err_category = "bot_protection_challenge"
                 msg = f"{adapter.name.title()} bot-protection challenge encountered; automated search safely skipped."
             elif any(k in err_str for k in ("blocked", "denied", "403", "429")):
                 status = "blocked"
+                err_category = "access_denied"
                 msg = f"{adapter.name.title()} access blocked (403/429); automated search safely skipped."
             else:
                 status = "failed"
-                msg = f"{adapter.name} search failed: {e}"
+                err_category = type(e).__name__
+                msg = f"{adapter.name.title()} search failed: {e}"
+            m.total_seconds = elapsed
+            m.status = status
+            m.error_category = err_category
+            m.error_message = msg
+            perf_monitor.log_supplier_completed(adapter.session_id, adapter.name)
+            try:
+                await adapter.close()
+            except Exception:
+                pass
             return SearchOutcome(
                 vendor=adapter.name,
                 status=status,
@@ -741,6 +760,7 @@ async def collect(state: State, config) -> State:
                 source_url=getattr(adapter, "last_search_url", None) or (getattr(adapter, "page", None) and getattr(adapter.page, "url", "")),
                 message=msg,
                 elapsed_seconds=elapsed,
+                error=err_category,
             )
 
     BOODMO_TIMEOUT = float(os.environ.get("BOODMO_TIMEOUT_SECONDS", "30.0"))
@@ -754,6 +774,12 @@ async def collect(state: State, config) -> State:
         except asyncio.TimeoutError:
             elapsed = round(time.time() - t0, 2)
             log.warning("%s collection timed out after %.1fs", name, timeout_val)
+            m = perf_monitor.get_metrics(adapter.session_id, name)
+            m.total_seconds = elapsed
+            m.status = "timeout"
+            m.error_category = "timeout"
+            m.error_message = f"{name.title()} search timed out after {int(timeout_val)} seconds"
+            perf_monitor.log_supplier_completed(adapter.session_id, name)
             return SearchOutcome(
                 vendor=name,
                 status="timeout",
@@ -765,6 +791,7 @@ async def collect(state: State, config) -> State:
                 source_url=getattr(adapter, "last_search_url", None) or "",
                 message=f"{name.title()} search timed out after {int(timeout_val)} seconds; continuing.",
                 elapsed_seconds=elapsed,
+                error="timeout",
             )
         finally:
             try:
@@ -870,8 +897,7 @@ async def collect(state: State, config) -> State:
     ]
     all_listings = relevance.rank_listings(all_listings, price_order="asc")
 
-    statuses = {outcome.status for outcome in outcomes}
-    status = "ok" if "ok" in statuses else "no_results" if "no_results" in statuses else "failed"
+    status = compute_overall_status(vendor_outcomes)
     return _profile_updates(profiles) | {"outcome": {
         "status": status,
         "vehicle_label": " ".join(x for x in (
@@ -880,6 +906,7 @@ async def collect(state: State, config) -> State:
         "listings": all_listings,
         "vendor_outcomes": vendor_outcomes,
         "source_url": None,
+        "total_elapsed": total_elapsed,
         "message": "; ".join(outcome.message for outcome in outcomes if outcome.message),
     }}
 
@@ -912,13 +939,60 @@ def _name(l: dict) -> str:
     return f"{l['brand'].title()} {l['title'].title()}".replace("_", " ")
 
 
+def compute_overall_status(outcomes: list[dict]) -> str:
+    """Classify overall sourcing status from individual supplier outcomes.
+
+    Statuses:
+    - success: All required supplier searches completed successfully without failure, and products were found.
+    - completed_no_results: All supplier searches completed successfully without failure, but 0 products found.
+    - partial_success: At least one supplier completed successfully and returned results.
+    - partial_failure: At least one supplier failed, blocked, or timed out, and another completed successfully (with 0 products).
+    - failed: All supplier searches failed, were blocked, or timed out.
+    """
+    if not outcomes:
+        return "failed"
+
+    bad_statuses = {"failed", "blocked", "challenge_detected", "timeout", "extraction_failed"}
+    good_statuses = {"completed", "ok", "no_results"}
+
+    num_total = len(outcomes)
+    num_bad = sum(1 for o in outcomes if o.get("status") in bad_statuses)
+    num_with_products = sum(1 for o in outcomes if len(o.get("listings", [])) > 0)
+
+    # 1. All failed, blocked, or timed out
+    if num_bad == num_total:
+        return "failed"
+
+    # 2. All completed without failure
+    if num_bad == 0:
+        if num_with_products > 0:
+            return "success"
+        return "completed_no_results"
+
+    # 3. Mixed: some failed/blocked/timeout, some succeeded
+    if num_with_products > 0:
+        return "partial_success"
+    return "partial_failure"
+
+
 def summarize(profile: VehicleProfile, outcome: dict) -> str:
     if outcome.get("vendor_outcomes") is not None:
+        vehicle = " ".join(x for x in (profile.maker, profile.model, profile.year, profile.variant) if x) or "the requested vehicle"
+        req_part = profile.part or profile.category or "parts"
+        st = outcome.get("status")
+        if st == "failed":
+            prefix = f"Your {vehicle} {req_part} search could not be completed."
+        elif st == "completed_no_results":
+            prefix = f"Your {vehicle} {req_part} search found no matching products."
+        elif st == "partial_failure" and not outcome.get("listings"):
+            prefix = f"Your {vehicle} {req_part} search could not be completed."
+        else:
+            prefix = f"Your {vehicle} {req_part} search is complete."
         summaries = [
             _summarize_vendor(profile, vendor_outcome)
             for vendor_outcome in outcome["vendor_outcomes"]
         ]
-        return " ".join(summary for summary in summaries if summary)
+        return f"{prefix} " + " ".join(summary for summary in summaries if summary)
 
     return _summarize_boodmo(profile, outcome)
 
@@ -932,10 +1006,14 @@ def _summarize_vendor(profile: VehicleProfile, outcome: dict) -> str:
     }.get(outcome.get("vendor"), outcome.get("vendor") or "Supplier")
     label = outcome.get("vehicle_label") or " ".join(x for x in (
         profile.maker, profile.model, profile.year, profile.variant,
-    ) if x)
-    if outcome.get("status") == "no_results":
-        return outcome.get("message") or f"{vendor} returned no product listings for {label}."
-    if outcome.get("status") != "ok":
+    ) if x) or "the requested vehicle"
+
+    status = outcome.get("status")
+    if status in ("challenge_detected", "blocked"):
+        return f"{vendor} access was blocked or bot-protected; automated search safely skipped."
+    if status == "timeout":
+        return f"{vendor} search timed out."
+    if status not in ("ok", "completed", "no_results"):
         return f"{vendor}: {outcome.get('message') or 'search failed.'}"
     listings = outcome.get("listings") or []
     if not listings:

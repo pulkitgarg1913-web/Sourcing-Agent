@@ -13,6 +13,7 @@ class VehicleProfile:
     before use; the raw user hints are kept separately in `hints`.
     """
     part: Optional[str] = None
+    requested_part: Optional[str] = None
     category: Optional[str] = None          # resolved supplier category name
     maker: Optional[str] = None
     model: Optional[str] = None
@@ -89,12 +90,21 @@ class Listing:
 @dataclass
 class SearchOutcome:
     vendor: str
-    status: str                 # ok | no_results | failed | timeout | blocked
-    vehicle_label: str
-    listings: list[dict]
-    source_url: str
+    status: str                                  # ok | completed | no_results | failed | timeout | blocked
+    vehicle_label: str = ""
+    listings: list = field(default_factory=list)
+    source_url: str = ""
     message: str = ""
     elapsed_seconds: float = 0.0
     source_type: str = "live"   # live | cached | demo
     is_cached: bool = False
     is_demo: bool = False
+    raw_count: Optional[int] = None
+    raw_listings: list = field(default_factory=list)
+    error: Optional[str] = None
+    clarification_required: bool = False
+    missing_fields: list[str] = field(default_factory=list)
+
+    @property
+    def products(self) -> list:
+        return self.listings
