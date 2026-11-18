@@ -27,7 +27,7 @@ from typing import Annotated, Callable, Optional, TypedDict
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 
-from . import llm, variants
+from . import context, llm, variants
 from .auto_dukan import AutoDukanAdapter
 from .boodmo import BoodmoAdapter
 from .browser_manager import get_browser_manager
@@ -149,6 +149,7 @@ class State(TypedDict, total=False):
     request: str
     profile: dict                  # Boodmo profile, retained for summary compatibility
     supplier_profiles: dict        # independent selections for each supplier
+    vehicle_context: Optional[dict] # centralized vehicle context
     pending: Optional[dict]      # NeedInput (or a confirmation) waiting for an answer
     answer: Optional[str]
     outcome: Optional[dict]
@@ -170,39 +171,61 @@ RESETS = {
 }
 
 
-def _quick_hints(text: str, profile: VehicleProfile):
+def _quick_hints(text: str, profile: VehicleProfile, overwrite: bool = False):
     """Pick up details mentioned in passing ("2021, diesel automatic") without an LLM call."""
     t = text.lower()
     raw = text.strip()
-    if not profile.year and (m := re.search(r"\b(19[89]\d|20[0-4]\d)\b", t)):
-        profile.hints.setdefault("year", m.group(1))
+    if (overwrite or not profile.year) and (m := re.search(r"\b(19[89]\d|20[0-4]\d)\b", t)):
+        if overwrite:
+            profile.hints["year"] = m.group(1)
+            profile.year = m.group(1)
+        else:
+            profile.hints.setdefault("year", m.group(1))
     for fuel in ("diesel", "petrol", "cng", "electric"):
         if re.search(rf"\b{fuel}\b", t):
-            profile.hints.setdefault("fuel", fuel.lower())
+            if overwrite:
+                profile.hints["fuel"] = fuel.lower()
+                profile.hints["fuel_unknown"] = False
+            else:
+                profile.hints.setdefault("fuel", fuel.lower())
             break
     if re.search(r"\b(?:imt)\b", t):
-        profile.hints.setdefault("transmission", "iMT")
+        if overwrite: profile.hints["transmission"] = "iMT"
+        else: profile.hints.setdefault("transmission", "iMT")
     elif re.search(r"\b(?:ivt)\b", t):
-        profile.hints.setdefault("transmission", "IVT")
+        if overwrite: profile.hints["transmission"] = "IVT"
+        else: profile.hints.setdefault("transmission", "IVT")
     elif re.search(r"\b(?:dct)\b", t):
-        profile.hints.setdefault("transmission", "DCT")
+        if overwrite: profile.hints["transmission"] = "DCT"
+        else: profile.hints.setdefault("transmission", "DCT")
     elif re.search(r"\b(?:dsg)\b", t):
-        profile.hints.setdefault("transmission", "DSG")
+        if overwrite: profile.hints["transmission"] = "DSG"
+        else: profile.hints.setdefault("transmission", "DSG")
     elif re.search(r"\b(?:amt|ags)\b", t):
-        profile.hints.setdefault("transmission", "AMT")
+        if overwrite: profile.hints["transmission"] = "AMT"
+        else: profile.hints.setdefault("transmission", "AMT")
     elif re.search(r"\b(?:automatic|auto|\bat\b)\b", t):
-        profile.hints.setdefault("transmission", "automatic")
+        if overwrite: profile.hints["transmission"] = "automatic"
+        else: profile.hints.setdefault("transmission", "automatic")
     elif re.search(r"\b(?:manual|\bmt\b)\b", t):
-        profile.hints.setdefault("transmission", "manual")
+        if overwrite: profile.hints["transmission"] = "manual"
+        else: profile.hints.setdefault("transmission", "manual")
     if eng := re.search(r"(?<![a-z0-9])([0-5]\.\d|[0-5]\d?\.\d|\b[1-5]\b)\s*(?:l|litre|liter)\b", raw, re.I):
-        profile.hints.setdefault("engine", f"{eng.group(1)}L")
+        if overwrite: profile.hints["engine"] = f"{eng.group(1)}L"
+        else: profile.hints.setdefault("engine", f"{eng.group(1)}L")
     elif eng := re.search(r"(?<![a-z0-9])([0-5]\.\d)(?![a-z0-9])", raw):
-        profile.hints.setdefault("engine", f"{eng.group(1)}L")
+        if overwrite: profile.hints["engine"] = f"{eng.group(1)}L"
+        else: profile.hints.setdefault("engine", f"{eng.group(1)}L")
     if tm := re.search(r"(?<![a-z0-9])(GTX\+|GTX\s*PLUS|GTX|HTX\+|HTX\s*PLUS|HTX|HTK\+|HTK\s*PLUS|HTK|HTE|X[- ]?LINE|XZA?\+|XZA|XZ\+|XZ|XT|XM|XE|CREATIVE\+|CREATIVE|FEARLESS\+|FEARLESS|PURE\+|PURE|SMART\+|SMART|SX\s*\(?O\)?|SX\s*PLUS|SX\s*TECH|SX|EX|ZXI\+|ZXI|VXI|LXI|ALPHA|ZETA|DELTA|SIGMA|AX7\s*L?|AX5|AX3|LX|AX\s*OPT|AX)(?![a-z0-9])", raw, re.I):
         trim_str = tm.group(1).upper().replace(" PLUS", "+").replace("PLUS", "+")
         if trim_str in ("X LINE", "X-LINE"):
             trim_str = "X-Line"
-        profile.hints.setdefault("trim", trim_str)
+        if overwrite:
+            profile.hints["trim"] = trim_str
+            profile.hints["trim_unknown"] = False
+            profile.hints["trim_source"] = "user_provided"
+        else:
+            profile.hints.setdefault("trim", trim_str)
 
 
 def _profiles_from_state(state: State) -> dict[str, VehicleProfile]:
@@ -267,9 +290,38 @@ def _profiles_from_state(state: State) -> dict[str, VehicleProfile]:
 
 
 def _profile_updates(profiles: dict[str, VehicleProfile]) -> dict:
+    b = profiles.get("boodmo") or next(iter(profiles.values()))
+    ad = profiles.get("autodukan")
+
+    make = (b.maker or b.hints.get("make")) or (ad and (ad.maker or ad.hints.get("make")))
+    model = (b.model or b.hints.get("model")) or (ad and (ad.model or ad.hints.get("model")))
+    year = (b.year or str(b.hints.get("year") or "")) or (ad and (ad.year or str(ad.hints.get("year") or ""))) or None
+    fuel = b.hints.get("fuel") or (ad and ad.hints.get("fuel"))
+    tx = b.hints.get("transmission") or (ad and ad.hints.get("transmission"))
+    trim = b.hints.get("trim") or (ad and ad.hints.get("trim")) or b.variant
+    trim_unknown = bool(b.hints.get("trim_unknown") or (ad and ad.hints.get("trim_unknown")))
+    eng = b.hints.get("engine") or (ad and ad.hints.get("engine"))
+    part = b.requested_part or (ad and ad.requested_part)
+
+    ctx = context.VehicleContext(
+        make=make,
+        model=model,
+        year=year,
+        fuel_type=context.normalize_fuel(fuel),
+        transmission=context.normalize_transmission(tx),
+        variant=context.normalize_trim(trim) if not trim_unknown else None,
+        trim=context.normalize_trim(trim) if not trim_unknown else None,
+        engine=eng,
+        requested_part=part,
+    )
+    trim_source = b.hints.get("trim_source") or (ad and ad.hints.get("trim_source"))
+    if trim_source:
+        ctx.provenance["variant"] = trim_source
+        ctx.provenance["trim"] = trim_source
     return {
-        "profile": profiles["boodmo"].to_dict(),
+        "profile": b.to_dict(),
         "supplier_profiles": {name: profile.to_dict() for name, profile in profiles.items()},
+        "vehicle_context": ctx.to_dict(),
     }
 
 
@@ -365,6 +417,26 @@ async def navigate(state: State, config) -> State:
 
     # Conversational Clarification Flow (before supplier search)
     if not state.get("confirmed"):
+        # Step 1a: Ask make if missing
+        if not maker:
+            makes = ["Maruti Suzuki", "Hyundai", "Tata", "Mahindra", "Kia", "Toyota", "Honda", "Volkswagen", "Skoda", "Renault"]
+            need = NeedInput(
+                field="maker",
+                question="What is the car's make (brand), such as Tata, Hyundai, or Maruti Suzuki?",
+                options=makes,
+            )
+            return _profile_updates(profiles) | {"pending": need.to_dict()}
+
+        # Step 1b: Ask model if missing
+        if not model:
+            models = variants.get_maker_models(maker)
+            need = NeedInput(
+                field="model",
+                question=f"Which {maker.title()} model is it?" + (f" For example, {', '.join(models[:3])}." if models else ""),
+                options=models,
+            )
+            return _profile_updates(profiles) | {"pending": need.to_dict()}
+
         if maker and model:
             # Step 2: Ask model year if missing
             if not year:
@@ -376,10 +448,10 @@ async def navigate(state: State, config) -> State:
                 )
                 return _profile_updates(profiles) | {"pending": need.to_dict()}
 
-            is_seltos = (maker.lower(), model.lower()) == ("kia", "seltos") or model.lower() == "seltos"
+            req_attrs = context.get_part_required_attributes(part, maker, model)
 
-            # Step 3: Ask fuel / engine configuration if missing (for Seltos or where fuels exist)
-            if is_seltos and not fuel:
+            # Step 2: Ask fuel / engine configuration if missing (and required for the part)
+            if "fuel" in req_attrs and not fuel and not active_p.hints.get("fuel_unknown"):
                 fuels = variants.get_model_fuels(maker, model)
                 if len(fuels) > 1:
                     need = NeedInput(
@@ -390,8 +462,8 @@ async def navigate(state: State, config) -> State:
                     )
                     return _profile_updates(profiles) | {"pending": need.to_dict()}
 
-            # Step 3b: Ask transmission if missing (for Seltos)
-            if is_seltos and not transmission:
+            # Step 3: Ask transmission if missing (and required for the part)
+            if "transmission" in req_attrs and not transmission and not active_p.hints.get("transmission_unknown"):
                 transmissions = variants.get_model_transmissions(maker, model)
                 need = NeedInput(
                     field="variant_attr",
@@ -401,16 +473,17 @@ async def navigate(state: State, config) -> State:
                 )
                 return _profile_updates(profiles) | {"pending": need.to_dict()}
 
-            # Step 4: Ask vehicle trim / variant if missing (for Seltos)
-            if is_seltos and not trim:
+            # Step 4: Ask vehicle trim / variant if missing (and required for the part)
+            if "trim" in req_attrs and not trim and not active_p.hints.get("trim_unknown"):
                 trims = variants.get_model_trims(maker, model)
-                if trims:
-                    need = NeedInput(
-                        field="trim",
-                        question=f"Which variant or trim is your {maker.title()} {model.title()}?",
-                        options=trims,
-                    )
-                    return _profile_updates(profiles) | {"pending": need.to_dict()}
+                if not trims:
+                    trims = ["Other / Not sure"]
+                need = NeedInput(
+                    field="trim",
+                    question=f"Which variant or trim is your {maker.title()} {model.title()}?",
+                    options=trims,
+                )
+                return _profile_updates(profiles) | {"pending": need.to_dict()}
 
             # Step 5: Confirm vehicle profile
             if getattr(session, "require_confirmation", False):
@@ -418,12 +491,18 @@ async def navigate(state: State, config) -> State:
                 lines.append(f"- Make: {maker.title()}")
                 lines.append(f"- Model: {model.title()}")
                 lines.append(f"- Year: {year}")
-                lines.append(f"- Variant / Trim: {trim or 'Standard'}")
-                if fuel:
+                is_explicit_standard = trim and trim.lower() == "standard" and active_p.hints.get("trim_explicit")
+                if trim and trim.lower() not in ("unknown", "*unknown*") and not active_p.hints.get("trim_unknown"):
+                    lines.append(f"- Variant / Trim: {trim}")
+                elif is_explicit_standard:
+                    lines.append("- Variant / Trim: Standard")
+                else:
+                    lines.append("- Variant / Trim: Unknown")
+                if fuel and not active_p.hints.get("fuel_unknown"):
                     lines.append(f"- Fuel: {fuel.title()}")
-                if engine:
+                if engine and not active_p.hints.get("engine_unknown"):
                     lines.append(f"- Engine: {engine}")
-                if transmission:
+                if transmission and not active_p.hints.get("transmission_unknown"):
                     lines.append(f"- Transmission: {transmission.upper() if len(transmission) <= 4 else transmission.title()}")
                 lines.append("Would you like to search with these details, or change anything?")
                 car_label = f"{maker} {model} {year} {trim or ''}".strip()
@@ -564,13 +643,21 @@ async def interpret(state: State, config) -> State:
                 "pending": None, "confirmed": True, "turns": [turn | {"resolved": "confirmed"}]
             }
         # If user asked to modify or gave new hints, apply them
-        _quick_hints(ans, profile)
+        _quick_hints(ans, profile, overwrite=True)
+        if tm := re.search(r"(?:variant|trim)\s+(?:to|is)\s+([a-zA-Z0-9\+\-]+)", ans, re.I):
+            new_trim = tm.group(1).upper()
+            profile.hints["trim"] = new_trim
+            profile.hints["trim_unknown"] = False
+            profile.hints["trim_source"] = "user_provided"
         for k in ("year", "fuel", "transmission", "engine", "trim"):
             if k in profile.hints:
                 for vp in profiles.values():
                     vp.hints[k] = profile.hints[k]
                     if k == "year":
                         vp.year = profile.hints[k]
+                    elif k in ("fuel", "transmission", "trim"):
+                        vp.variant = None
+                        vp.variant_filters = {}
         turn["resolved"] = "modify"
         return _profile_updates(profiles) | {
             "pending": None, "confirmed": False, "turns": [turn | {"resolved": "modify"}]
@@ -594,21 +681,48 @@ async def interpret(state: State, config) -> State:
         siblings = _other_profiles(profiles, vendor)
 
     if p["field"] == "trim":
-        if DONT_KNOW.search(ans) or any(phrase in ans.lower() for phrase in ("other", "not sure", "don't know", "skip", "unknown")):
-            val = "Standard"
-            profile.hints["trim_unverified"] = True
-            _apply(profile, p, val, config, profiles, vendor)
-            return _resolved(profiles, turn, val)
+        ans_clean = ans.strip()
+        is_unknown = (
+            DONT_KNOW.search(ans)
+            or any(phrase in ans_clean.lower() for phrase in ("other / not sure", "not sure", "don't know", "skip", "unknown", "none"))
+        )
+        is_explicit_standard = ans_clean.lower() == "standard" and not is_unknown
+
+        if is_unknown and not is_explicit_standard:
+            val = None
+            profile.hints["trim"] = None
+            profile.hints["trim_unknown"] = True
+            profile.hints["trim_source"] = "unknown"
+            for sibling in _other_profiles(profiles, vendor):
+                sibling.hints["trim"] = None
+                sibling.hints["trim_unknown"] = True
+                sibling.hints["trim_source"] = "unknown"
+            return _resolved(profiles, turn, "Unknown")
+
         options = p.get("options") or []
         matched_idx = llm.match_option_locally(ans, options)
         if matched_idx is not None and 0 <= matched_idx < len(options):
             val = options[matched_idx]
             if val in ("Other / Not sure", "Other", "Not sure"):
-                val = "Standard"
-                profile.hints["trim_unverified"] = True
+                val = None
+                profile.hints["trim"] = None
+                profile.hints["trim_unknown"] = True
+                profile.hints["trim_source"] = "unknown"
+                for sibling in _other_profiles(profiles, vendor):
+                    sibling.hints["trim"] = None
+                    sibling.hints["trim_unknown"] = True
+                    sibling.hints["trim_source"] = "unknown"
+                return _resolved(profiles, turn, "Unknown")
         else:
-            val = ans.strip()
+            val = ans_clean
             profile.hints["trim_unverified"] = True
+            for sibling in _other_profiles(profiles, vendor):
+                sibling.hints["trim_unverified"] = True
+
+        if val and val.lower() == "standard":
+            profile.hints["trim_explicit"] = True
+        profile.hints["trim_source"] = "user_provided"
+        profile.hints["trim_unknown"] = False
         _apply(profile, p, val, config, profiles, vendor)
         return _resolved(profiles, turn, val)
 
@@ -695,6 +809,42 @@ async def interpret(state: State, config) -> State:
                                  if p.get("attr") else None)
     idx, unsure = await llm.match_option_async(ans, p["question"], options, spoken)
     if idx is None:
+        if p["field"] == "maker":
+            ans_clean = ans.strip().lower()
+            maker_val = llm._MAKE_ALIASES.get(ans_clean)
+            if not maker_val:
+                for o in options:
+                    if o.strip().lower() == ans_clean or ans_clean in o.strip().lower():
+                        maker_val = o.strip()
+                        break
+            if not maker_val and re.match(r"^[a-zA-Z0-9\s\-]+$", ans.strip()):
+                maker_val = ans.strip().title()
+            if maker_val:
+                _apply(profile, p, maker_val, config, profiles, vendor)
+                return _resolved(profiles, turn, maker_val)
+
+        elif p["field"] == "model":
+            ans_clean = ans.strip().lower()
+            model_info = llm._MODEL_ALIASES.get(ans_clean)
+            model_val = model_info[0].title() if model_info else None
+            if not model_val:
+                for o in options:
+                    if o.strip().lower() == ans_clean or ans_clean in o.strip().lower():
+                        model_val = o.strip()
+                        break
+            if not model_val and re.match(r"^[a-zA-Z0-9\s\-]+$", ans.strip()):
+                model_val = ans.strip().title()
+            if model_val:
+                _apply(profile, p, model_val, config, profiles, vendor)
+                return _resolved(profiles, turn, model_val)
+
+        elif p["field"] == "year":
+            ym = re.search(r"\b(19\d{2}|20\d{2})\b", ans)
+            if ym:
+                year_val = ym.group(1)
+                _apply(profile, p, year_val, config, profiles, vendor)
+                return _resolved(profiles, turn, year_val)
+
         useful = {k: v for k, v in new_hints.items()
                   if profile.variant_filters.get(k) in (None, variants.SKIP)}
         if useful and p["field"] in ("variant_attr", "variant"):
@@ -746,6 +896,7 @@ def _apply(profile: VehicleProfile, need: dict, value: str, config,
             profile.variant_filters = {}
         setattr(profile, f, value)
         hint_key = {"maker": "make", "model": "model", "year": "year"}[f]
+        profile.hints[hint_key] = value
         for sibling in _other_profiles(profiles, vendor):
             previous_hint = sibling.hints.get(hint_key)
             changed_hint = bool(previous_hint and str(previous_hint).casefold() != value.casefold())

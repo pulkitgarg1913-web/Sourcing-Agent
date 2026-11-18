@@ -120,3 +120,15 @@ class SearchOutcome:
     is_demo: bool = False
     raw_count: Optional[int] = None
     raw_listings: list = field(default_factory=list)
+    clarification_required: bool = False
+    missing_fields: list[str] = field(default_factory=list)
+    error: Optional[str] = None
+
+    @property
+    def products(self) -> list:
+        return self.listings
+
+    def to_dict(self) -> dict:
+        d = asdict(self)
+        d["products"] = [l if isinstance(l, dict) else l.to_dict() for l in self.listings]
+        return d
