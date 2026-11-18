@@ -295,20 +295,8 @@ class BoodmoAdapter:
         cat_map = catalog.get("categories", {})
         synonyms = catalog.get("synonyms_and_fallbacks", {})
 
-        part = (profile.requested_part or profile.part or "").strip()
-        if not getattr(profile, "requested_part", None):
-            profile.requested_part = part
+        part = (profile.part or "").strip()
         norm_p = _norm(part)
-
-        from . import relevance
-
-        def _valid_alts(cands: list[str]) -> list[str]:
-            out = []
-            for c in cands:
-                st, _ = relevance.check_part_family_compatibility(product_title=c, requested_part=part)
-                if st != relevance.WRONG_PART_TYPE:
-                    out.append(c)
-            return out
 
         # 1. Check direct case-insensitive exact match in categories first
         for name, href in cat_map.items():
@@ -322,7 +310,7 @@ class BoodmoAdapter:
                 for n in cat_map:
                     if n != name and words & set(_norm(n).split()) and n not in alts:
                         alts.append(n)
-                profile.hints["alternate_categories"] = _valid_alts(alts)[:6]
+                profile.hints["alternate_categories"] = alts[:6]
                 return None
 
         # 2. Check verified synonyms and common part names
@@ -334,7 +322,7 @@ class BoodmoAdapter:
             if href:
                 profile.category = primary
                 self.category_href = href
-                profile.hints["alternate_categories"] = _valid_alts([alt for alt in alternates if alt in cat_map])
+                profile.hints["alternate_categories"] = [alt for alt in alternates if alt in cat_map]
                 return None
 
         # 3. Substring matching in categories
@@ -353,7 +341,7 @@ class BoodmoAdapter:
             primary = exact_substrings[0]
             profile.category = primary
             self.category_href = cat_map[primary]
-            profile.hints["alternate_categories"] = _valid_alts(exact_substrings[1:5])
+            profile.hints["alternate_categories"] = exact_substrings[1:5]
             return None
 
         # 4. LLM semantic categorization with offline fallback
@@ -381,7 +369,7 @@ class BoodmoAdapter:
             primary = ranked[0]
             profile.category = primary
             self.category_href = cat_map.get(primary, "")
-            profile.hints["alternate_categories"] = _valid_alts([r for r in ranked[1:4] if r in cat_map])
+            profile.hints["alternate_categories"] = [r for r in ranked[1:4] if r in cat_map]
             return None
 
         cands = ["Maintenance Service Parts", "Filters", "Brake System", "Engine", "None of these", "Search by part name instead"]
@@ -525,11 +513,7 @@ class BoodmoAdapter:
         clean_model = model
         if make and model.lower().startswith(make.lower()):
             clean_model = model[len(make):].strip()
-        year = str(profile.year or profile.hints.get("year") or "").strip()
-        trim = str(profile.hints.get("trim") or "").strip()
-        if trim.lower() in ("standard", "other", "not sure", "other / not sure"):
-            trim = ""
-        terms = [t for t in [make, clean_model, year, trim, part] if t]
+        terms = [t for t in [make, clean_model, part] if t]
         query = " ".join(terms).strip()
         self.progress(f"Falling back to search for '{query}' on Boodmo")
         url = f"{BASE}/search/{urllib.parse.quote_plus(query)}/"
@@ -622,10 +606,6 @@ class BoodmoAdapter:
         # ---- year
         state = await self._options("year", profile)
         years = [y for y in (state["options"] if state else []) if y not in profile.rejected_years]
-        catalog_years = variants.get_model_catalog_years(profile.maker or "", profile.model or "")
-        combined_years = sorted(list(dict.fromkeys(years + catalog_years)), key=lambda y: (int(y) if y.isdigit() else 0))
-        if combined_years:
-            years = combined_years
         if not years:
             raise RuntimeError(f"Boodmo lists no years for {profile.maker} {profile.model}")
         if not profile.year:
@@ -634,16 +614,12 @@ class BoodmoAdapter:
                 profile.year = hint
             else:
                 note = None
+                if hint:
+                    note = f"Boodmo doesn't list the {profile.model.title()} for {hint}."
                 return NeedInput(field="year", options=years, note=note,
-                                 question=f"Which model year is your {profile.model.title()}?")
-        if state and profile.year and profile.year not in (state.get("options") or []):
-            log.info("Boodmo category page %s has no option for year %s; falling back to direct search",
-                     self.category_href, profile.year)
-            await self._search_fallback(profile)
-            self._advanced_signature = sig
-            self._advanced_ok = True
-            return None
-        if state and state.get("selected") != profile.year:
+                                 question=f"Which year is the {profile.model.title()}? "
+                                          f"Boodmo lists {years[0]} to {years[-1]}.")
+        if state["selected"] != profile.year:
             self.progress(f"Selecting year {profile.year}")
             await self._choose("year", profile.year)
 
@@ -842,7 +818,6 @@ class BoodmoAdapter:
         don't appear under all of them as partial fits."""
         t0_collect = time.time()
         m = perf_monitor.get_metrics(self.session_id, self.name)
-        req_p = (profile.requested_part or profile.part or "").strip()
         await self.start()
 
         if getattr(self, "_challenge_detected", False) or getattr(self, "_is_blocked", False):
@@ -1097,13 +1072,6 @@ class BoodmoAdapter:
                 if alt_cat in checked_categories:
                     continue
                 checked_categories.append(alt_cat)
-                if req_p:
-                    part_status, _ = relevance.check_part_family_compatibility(
-                        product_title=alt_cat,
-                        requested_part=req_p,
-                    )
-                    if part_status == relevance.WRONG_PART_TYPE:
-                        continue
                 alt_href = cat_map.get(alt_cat)
                 if not alt_href:
                     continue
@@ -1117,21 +1085,12 @@ class BoodmoAdapter:
                         for t in alt_tiles:
                             if not t.get("href"):
                                 continue
-                            clean_t = (t.get("title") or "").strip()
-                            if req_p:
-                                part_status, _ = relevance.check_part_family_compatibility(
-                                    product_title=clean_t,
-                                    requested_part=req_p,
-                                    category=alt_cat,
-                                )
-                                if part_status == relevance.WRONG_PART_TYPE:
-                                    continue
                             href = t["href"]
                             if href not in seen:
                                 seen[href] = {"tile": t, "hits": 1}
                                 number, item_id = _part_number(href, t.get("number") or "")
                                 listing = Listing(
-                                    title=clean_t, brand=t.get("brand") or "", part_number=number,
+                                    title=(t.get("title") or "").strip(), brand=t.get("brand") or "", part_number=number,
                                     price=_price(t.get("price")), mrp=_price(t.get("mrp")), url=BASE + href,
                                     fitment="verified",
                                     fitment_basis=f"Boodmo fitment filter: {vehicle} (under {alt_cat})",
@@ -1193,18 +1152,9 @@ class BoodmoAdapter:
                     pass
 
             for t in tiles:
-                clean_t = (t.get("title") or "").strip()
-                if req_p:
-                    part_status, _ = relevance.check_part_family_compatibility(
-                        product_title=clean_t,
-                        requested_part=req_p,
-                        category=profile.category or "",
-                    )
-                    if part_status == relevance.WRONG_PART_TYPE:
-                        continue
                 number, item_id = _part_number(t.get("href") or "", t.get("number") or "")
                 listing = Listing(
-                    title=clean_t, brand=t.get("brand") or profile.maker or "", part_number=number,
+                    title=(t.get("title") or "").strip(), brand=t.get("brand") or profile.maker or "", part_number=number,
                     price=_price(t.get("price")), mrp=_price(t.get("mrp")), url=BASE + (t.get("href") or ""),
                     fitment="unverified",
                     fitment_basis=f"Boodmo keyword search bar fallback for '{vehicle}'",
@@ -1219,8 +1169,7 @@ class BoodmoAdapter:
             checked_str = ", ".join(checked_categories)
             return SearchOutcome(vendor="boodmo", status="no_results", vehicle_label=vehicle,
                                  listings=[], source_url=source_url,
-                                 message=f"This part is not listed in Boodmo's catalogue for {vehicle}. (Checked categories: {checked_str})",
-                                 raw_count=0, raw_listings=[])
+                                 message=f"This part is not listed in Boodmo's catalogue for {vehicle}. (Checked categories: {checked_str})")
 
         # Product pages: seller offers, stock, part class. Tiles without a price have
         # no seller offer, so only priced ones are opened, a few tabs at a time.
@@ -1262,6 +1211,4 @@ class BoodmoAdapter:
         perf_monitor.log_supplier_completed(self.session_id, self.name)
         return SearchOutcome(vendor="boodmo", status="ok", vehicle_label=vehicle,
                              listings=[l.to_dict() for l in listings], source_url=source_url,
-                             elapsed_seconds=elapsed,
-                             raw_count=len(listings),
-                             raw_listings=[l.to_dict() for l in listings])
+                             elapsed_seconds=elapsed)

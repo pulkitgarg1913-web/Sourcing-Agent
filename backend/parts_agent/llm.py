@@ -299,33 +299,12 @@ def fallback_parse_request(text: str) -> ParsedRequest:
         result.year = year.group(1)
     for fuel in ("diesel", "petrol", "cng", "electric"):
         if re.search(rf"\b{fuel}\b", lowered):
-            result.fuel = fuel.lower()
+            result.fuel = fuel.title()
             break
-    if re.search(r"\b(?:imt)\b", lowered):
-        result.transmission = "iMT"
-    elif re.search(r"\b(?:ivt)\b", lowered):
-        result.transmission = "IVT"
-    elif re.search(r"\b(?:dct)\b", lowered):
-        result.transmission = "DCT"
-    elif re.search(r"\b(?:dsg)\b", lowered):
-        result.transmission = "DSG"
-    elif re.search(r"\b(?:amt|ags)\b", lowered):
-        result.transmission = "AMT"
-    elif re.search(r"\b(?:automatic|auto|cvt|\bat\b)\b", lowered):
+    if re.search(r"\b(?:automatic|auto|cvt|dct|amt|dsg)\b", lowered):
         result.transmission = "automatic"
-    elif re.search(r"\b(?:manual|\bmt\b)\b", lowered):
+    elif re.search(r"\bmanual\b", lowered):
         result.transmission = "manual"
-
-    if eng := re.search(r"(?<![a-z0-9])([0-5]\.\d|[0-5]\d?\.\d|\b[1-5]\b)\s*(?:l|litre|liter)\b", raw, re.I):
-        result.engine = f"{eng.group(1)}L"
-    elif eng := re.search(r"(?<![a-z0-9])([0-5]\.\d)(?![a-z0-9])", raw):
-        result.engine = f"{eng.group(1)}L"
-
-    if tm := re.search(r"(?<![a-z0-9])(GTX\+|GTX\s*PLUS|GTX|HTX\+|HTX\s*PLUS|HTX|HTK\+|HTK\s*PLUS|HTK|HTE|X[- ]?LINE|XZA?\+|XZA|XZ\+|XZ|XT|XM|XE|CREATIVE\+|CREATIVE|FEARLESS\+|FEARLESS|PURE\+|PURE|SMART\+|SMART|SX\s*\(?O\)?|SX\s*PLUS|SX\s*TECH|SX|EX|ZXI\+|ZXI|VXI|LXI|ALPHA|ZETA|DELTA|SIGMA|AX7\s*L?|AX5|AX3|LX|AX\s*OPT|AX)(?![a-z0-9])", raw, re.I):
-        trim_str = tm.group(1).upper().replace(" PLUS", "+").replace("PLUS", "+")
-        if trim_str in ("X LINE", "X-LINE"):
-            trim_str = "X-Line"
-        result.trim = trim_str
 
     for pattern, canonical in _PART_ALIASES:
         if re.search(pattern, lowered):
@@ -339,9 +318,7 @@ def fallback_parse_request(text: str) -> ParsedRequest:
             remainder = re.sub(rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])", " ", remainder, flags=re.I)
         for alias in sorted(_MODEL_ALIASES, key=len, reverse=True):
             remainder = re.sub(rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])", " ", remainder, flags=re.I)
-        remainder = re.sub(r"\b(19[89]\d|20[0-4]\d|diesel|petrol|cng|electric|automatic|auto|manual|at|mt|imt|ivt|dct|dsg|amt|ags)\b", " ", remainder, flags=re.I)
-        remainder = re.sub(r"(?<![a-z0-9])([0-5]\.\d|[0-5]\d?\.\d|\b[1-5]\b)\s*(?:l|litre|liter)?(?![a-z0-9])", " ", remainder, flags=re.I)
-        remainder = re.sub(r"(?<![a-z0-9])(GTX\+|GTX\s*PLUS|GTX|HTX\+|HTX\s*PLUS|HTX|HTK\+|HTK\s*PLUS|HTK|HTE|X[- ]?LINE|XZA?\+|XZA|XZ\+|XZ|XT|XM|XE|CREATIVE\+|CREATIVE|FEARLESS\+|FEARLESS|PURE\+|PURE|SMART\+|SMART|SX\s*\(?O\)?|SX\s*PLUS|SX\s*TECH|SX|EX|ZXI\+|ZXI|VXI|LXI|ALPHA|ZETA|DELTA|SIGMA|AX7\s*L?|AX5|AX3|LX|AX\s*OPT|AX)(?![a-z0-9])", " ", remainder, flags=re.I)
+        remainder = re.sub(r"\b(19[89]\d|20[0-4]\d|diesel|petrol|cng|electric|automatic|auto|manual)\b", " ", remainder, flags=re.I)
         result.part = re.sub(r"\s+", " ", remainder).strip(" ,.-") or None
     return result
 
