@@ -33,6 +33,12 @@ from .boodmo import BoodmoAdapter
 from .browser_manager import get_browser_manager
 from .models import NeedInput, SearchOutcome, VehicleProfile
 from .perf_logger import perf_monitor
+from .intent import (
+    AMBIGUOUS_CLARIFICATION_MESSAGE,
+    DEFAULT_OUT_OF_SCOPE_MESSAGE,
+    IntentCategory,
+    classify_intent_async,
+)
 
 log = logging.getLogger(__name__)
 RUNS = Path(__file__).resolve().parent.parent / "runs"
@@ -147,6 +153,8 @@ def _session(config) -> Session:
 
 class State(TypedDict, total=False):
     request: str
+    intent: Optional[str]
+    out_of_scope: Optional[bool]
     profile: dict                  # Boodmo profile, retained for summary compatibility
     supplier_profiles: dict        # independent selections for each supplier
     pending: Optional[dict]      # NeedInput (or a confirmation) waiting for an answer
@@ -271,6 +279,37 @@ def _other_profiles(profiles: dict[str, VehicleProfile], vendor: str) -> list[Ve
 
 async def understand(state: State, config) -> State:
     text = state["request"]
+
+    # 1. Strict Intent Validation before any LLM parsing or adapter calls
+    intent_res = await classify_intent_async(text, has_active_session=False)
+    if intent_res.category == IntentCategory.OUT_OF_SCOPE:
+        restriction_msg = intent_res.suggested_reply or DEFAULT_OUT_OF_SCOPE_MESSAGE
+        return {
+            "out_of_scope": True,
+            "intent": "OUT_OF_SCOPE",
+            "summary": restriction_msg,
+            "outcome": {
+                "status": "out_of_scope",
+                "message": restriction_msg,
+                "listings": [],
+            },
+            "turns": [{"t": time.time(), "role": "mechanic", "text": text},
+                      {"t": time.time(), "role": "agent", "text": restriction_msg}],
+        }
+
+    if intent_res.category == IntentCategory.AMBIGUOUS:
+        clarification_msg = intent_res.suggested_reply or AMBIGUOUS_CLARIFICATION_MESSAGE
+        need = NeedInput(
+            field="part",
+            question=clarification_msg,
+            options=[],
+        )
+        return {
+            "intent": "AMBIGUOUS",
+            "pending": need.to_dict(),
+            "turns": [{"t": time.time(), "role": "mechanic", "text": text},
+                      {"t": time.time(), "role": "agent", "text": clarification_msg}],
+        }
     profile = VehicleProfile()
     try:
         parsed = await llm.parse_request_async(text)
@@ -410,6 +449,19 @@ async def interpret(state: State, config) -> State:
     if CANCEL.match(ans):
         return _profile_updates(profiles) | {
             "cancelled": True, "pending": None, "turns": [turn | {"resolved": "cancel"}]
+        }
+
+    # Strict intent check on user reply during active session
+    intent_res = await classify_intent_async(ans, has_active_session=True, pending_field=p.get("field"))
+    if intent_res.category == IntentCategory.OUT_OF_SCOPE:
+        msg = intent_res.suggested_reply or DEFAULT_OUT_OF_SCOPE_MESSAGE
+        try:
+            _session(config).announce(msg)
+        except Exception:
+            pass
+        return _profile_updates(profiles) | {
+            "pending": p,
+            "turns": [turn | {"resolved": "out_of_scope", "response": msg}],
         }
     hints_before = dict(profile.hints)
     _quick_hints(ans, profile)
@@ -912,7 +964,9 @@ async def collect(state: State, config) -> State:
 
 
 async def present(state: State) -> State:
-    if state.get("cancelled"):
+    if state.get("out_of_scope"):
+        summary = state.get("summary") or DEFAULT_OUT_OF_SCOPE_MESSAGE
+    elif state.get("cancelled"):
         summary = "Okay, search cancelled. Nothing was ordered."
     elif state.get("error"):
         summary = f"Sorry, {state['error']}"
@@ -1079,6 +1133,8 @@ def _summarize_boodmo(profile: VehicleProfile, outcome: dict) -> str:
 # ---------------------------------------------------------------- graph
 
 def _after_understand(state: State) -> str:
+    if state.get("out_of_scope"):
+        return "present"
     return "interpret" if state.get("pending") else "navigate"
 
 
@@ -1104,7 +1160,7 @@ def build_graph():
     g.add_node("collect", collect)
     g.add_node("present", present)
     g.add_edge(START, "understand")
-    g.add_conditional_edges("understand", _after_understand, ["interpret", "navigate"])
+    g.add_conditional_edges("understand", _after_understand, ["interpret", "navigate", "present"])
     g.add_conditional_edges("navigate", _after_navigate, ["interpret", "collect", "present"])
     g.add_conditional_edges("interpret", _after_interpret, ["interpret", "navigate", "collect", "present"])
     g.add_edge("collect", "present")

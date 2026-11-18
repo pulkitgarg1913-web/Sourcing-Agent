@@ -46,6 +46,12 @@ from parts_agent.graph import (
     _profiles_from_state,
 )
 from parts_agent.models import Listing, NeedInput, SearchOutcome, VehicleProfile
+from parts_agent.intent import (
+    AMBIGUOUS_CLARIFICATION_MESSAGE,
+    DEFAULT_OUT_OF_SCOPE_MESSAGE,
+    IntentCategory,
+    classify_intent_async,
+)
 
 # Load .env from backend directory or project root
 for env_path in [
@@ -624,6 +630,69 @@ async def start_chat(payload: StartRequest):
                 {"type": "log_event", "message": f"Agent: {text}", "level": "info"},
             )
 
+        # -----------------------------------------------------------------
+        # Strict Intent Validation Layer
+        # Validate intent BEFORE starting Boodmo/AutoDukan adapters or Chromium sessions
+        # -----------------------------------------------------------------
+        intent_res = await classify_intent_async(payload.message, has_active_session=False)
+
+        if intent_res.category == IntentCategory.OUT_OF_SCOPE:
+            restriction_msg = intent_res.suggested_reply or DEFAULT_OUT_OF_SCOPE_MESSAGE
+            log.info("Session %s rejected out-of-scope query: '%s' (reason: %s)", thread_id, payload.message, intent_res.reason)
+            sse_manager.publish(
+                thread_id,
+                {"type": "agent_message", "message": restriction_msg, "role": "agent"},
+            )
+            sse_manager.publish(
+                thread_id,
+                {"type": "log_event", "message": f"Agent: {restriction_msg}", "level": "info"},
+            )
+            sse_manager.publish(
+                thread_id,
+                {
+                    "type": "complete",
+                    "combined_count": 0,
+                    "total_elapsed": 0.0,
+                    "status": "out_of_scope",
+                    "outcome": {
+                        "status": "out_of_scope",
+                        "message": restriction_msg,
+                        "listings": [],
+                    },
+                },
+            )
+            return {
+                "status": "out_of_scope",
+                "thread_id": thread_id,
+                "message": restriction_msg,
+            }
+
+        if intent_res.category == IntentCategory.AMBIGUOUS:
+            clarification_msg = intent_res.suggested_reply or AMBIGUOUS_CLARIFICATION_MESSAGE
+            log.info("Session %s requested clarification for ambiguous query: '%s'", thread_id, payload.message)
+            sse_manager.publish(
+                thread_id,
+                {"type": "agent_message", "message": clarification_msg, "role": "agent"},
+            )
+            sse_manager.publish(
+                thread_id,
+                {"type": "log_event", "message": f"Agent: {clarification_msg}", "level": "info"},
+            )
+            sse_manager.publish(
+                thread_id,
+                {
+                    "type": "ask_input",
+                    "field": "part",
+                    "question": clarification_msg,
+                    "options": [],
+                },
+            )
+            return {
+                "status": "ok",
+                "thread_id": thread_id,
+                "message": "Clarification needed",
+            }
+
         # Initialize session with adapters (force headless on servers without a display)
         use_headless = payload.headless if os.environ.get("DISPLAY") else True
         session = open_session(
@@ -782,6 +851,32 @@ async def reply_chat(payload: ReplyRequest):
             thread_id,
             {"type": "log_event", "message": f'Customer reply: "{payload.answer}"', "level": "info"},
         )
+
+        # Strict intent check on user reply
+        pending = convo.state.get("pending") if convo and hasattr(convo, "state") else None
+        pending_field = pending.get("field") if isinstance(pending, dict) else None
+        intent_res = await classify_intent_async(
+            payload.answer,
+            has_active_session=bool(pending),
+            pending_field=pending_field,
+        )
+
+        if intent_res.category == IntentCategory.OUT_OF_SCOPE:
+            restriction_msg = intent_res.suggested_reply or DEFAULT_OUT_OF_SCOPE_MESSAGE
+            log.info("Session %s rejected out-of-scope reply: '%s' (reason: %s)", thread_id, payload.answer, intent_res.reason)
+            sse_manager.publish(
+                thread_id,
+                {"type": "agent_message", "message": restriction_msg, "role": "agent"},
+            )
+            sse_manager.publish(
+                thread_id,
+                {"type": "log_event", "message": f"Agent: {restriction_msg}", "level": "info"},
+            )
+            return {
+                "status": "out_of_scope",
+                "thread_id": thread_id,
+                "message": restriction_msg,
+            }
 
         async def run_reply():
             try:
