@@ -13,6 +13,7 @@ class VehicleProfile:
     before use; the raw user hints are kept separately in `hints`.
     """
     part: Optional[str] = None
+    requested_part: Optional[str] = None    # Canonical requested part name from user
     category: Optional[str] = None          # resolved supplier category name
     maker: Optional[str] = None
     model: Optional[str] = None
@@ -58,11 +59,11 @@ class Offer:
 @dataclass
 class Listing:
     title: str
-    brand: str
-    part_number: str
-    price: Optional[float]
-    mrp: Optional[float]
-    url: str
+    brand: str = ""
+    part_number: str = ""
+    price: Optional[float] = None
+    mrp: Optional[float] = None
+    url: str = ""
     origin: Optional[str] = None            # OEM / Aftermarket
     part_class: Optional[str] = None        # supplier's part class, e.g. "Oil Filter"
     match: str = "exact"                    # exact | related (different part class)
@@ -81,20 +82,41 @@ class Listing:
     supplier_name: Optional[str] = None     # "Boodmo" | "AutoDukan"
     seller: Optional[str] = None
     dispatch: Optional[str] = None
+    part_family_classification: Optional[str] = None
+    classification_reason: Optional[str] = None
+    source: Optional[str] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict | "Listing" | None) -> "Listing":
+        if isinstance(d, cls):
+            return d
+        if not d:
+            return cls(title="", brand="", part_number="", price=None, mrp=None, url="")
+        fields = {f.name for f in cls.__dataclass_fields__.values()}
+        filtered = {k: v for k, v in d.items() if k in fields}
+        filtered.setdefault("title", "")
+        filtered.setdefault("brand", "")
+        filtered.setdefault("part_number", "")
+        filtered.setdefault("price", None)
+        filtered.setdefault("mrp", None)
+        filtered.setdefault("url", "")
+        return cls(**filtered)
 
 
 @dataclass
 class SearchOutcome:
     vendor: str
-    status: str                 # ok | no_results | failed | timeout | blocked
-    vehicle_label: str
-    listings: list[dict]
-    source_url: str
+    status: str                                  # ok | no_results | failed | timeout | blocked
+    vehicle_label: str = ""
+    listings: list = field(default_factory=list)
+    source_url: str = ""
     message: str = ""
     elapsed_seconds: float = 0.0
     source_type: str = "live"   # live | cached | demo
     is_cached: bool = False
     is_demo: bool = False
+    raw_count: Optional[int] = None
+    raw_listings: list = field(default_factory=list)

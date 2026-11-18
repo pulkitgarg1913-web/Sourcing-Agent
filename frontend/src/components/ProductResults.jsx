@@ -38,10 +38,24 @@ export default function ProductResults({
   const [showAccessoriesMap, setShowAccessoriesMap] = useState({}) // { boodmo: bool, autodukan: bool }
   const [layoutMode, setLayoutMode] = useState("stacked") // stacked | side_by_side
 
+  const isMatchingProduct = (item) => {
+    if (!item) return false
+    if (
+      item.relevance === "IRRELEVANT" ||
+      item.relevance === "WRONG_PART_TYPE" ||
+      item.relevance === "INCOMPATIBLE"
+    )
+      return false
+    if (item.fitment === "wrong_part_type" || item.fitment === "incompatible")
+      return false
+    if (item.part_family_classification === "WRONG_PART_TYPE") return false
+    return true
+  }
+
   // Filter listings by relevance, stock & search text
   const filterListings = (items) => {
     return items.filter((item) => {
-      if (item.relevance === "IRRELEVANT") return false
+      if (!isMatchingProduct(item)) return false
 
       const rel = item.relevance || "EXACT_MATCH"
       if (relevanceFilter === "exact" && rel !== "EXACT_MATCH" && rel !== "EXACT_PART_MATCH") return false
@@ -139,8 +153,8 @@ export default function ProductResults({
 
   // Supplier counts computed directly from separated adapter items
   const supplierCounts = useMemo(() => {
-    const validBoodmo = boodmoRaw.filter((l) => l.relevance !== "IRRELEVANT")
-    const validAutoDukan = autodukanRaw.filter((l) => l.relevance !== "IRRELEVANT")
+    const validBoodmo = boodmoRaw.filter(isMatchingProduct)
+    const validAutoDukan = autodukanRaw.filter(isMatchingProduct)
     return {
       all: validBoodmo.length + validAutoDukan.length,
       boodmo: validBoodmo.length,
@@ -150,7 +164,7 @@ export default function ProductResults({
 
   // Stock counts
   const stockCounts = useMemo(() => {
-    const valid = listings.filter((l) => l.relevance !== "IRRELEVANT")
+    const valid = listings.filter(isMatchingProduct)
     return {
       all: valid.length,
       inStock: valid.filter((l) => l.available === true).length,
@@ -160,7 +174,7 @@ export default function ProductResults({
 
   // Relevance counts
   const relevanceCounts = useMemo(() => {
-    const valid = listings.filter((l) => l.relevance !== "IRRELEVANT")
+    const valid = listings.filter(isMatchingProduct)
     const counts = { all: valid.length, exact: 0, close: 0, component: 0, accessory: 0 }
     for (const l of valid) {
       const r = l.relevance || "EXACT_MATCH"

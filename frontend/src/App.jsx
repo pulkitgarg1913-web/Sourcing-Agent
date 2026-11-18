@@ -222,7 +222,9 @@ export default function App() {
                 status: isNoResults ? "No Results" : "Completed",
                 progress: 100,
                 currentOperation: isNoResults
-                  ? "0 matching products found for this vehicle and part"
+                  ? (event.raw_products_extracted > 0
+                      ? `0 matching products (${event.raw_products_extracted} catalogue listings checked)`
+                      : "0 matching products found for this vehicle and part")
                   : `Completed: ${prodCount} parts found`,
                 productsExtracted: prodCount,
                 elapsedSeconds: event.elapsed_seconds,
@@ -372,7 +374,9 @@ export default function App() {
                     status: vo.status === "failed" ? "Failed" : vo.status === "blocked" ? "Blocked" : isNoResults ? "No Results" : "Completed",
                     progress: 100,
                     currentOperation: isNoResults
-                      ? "0 matching products found for this vehicle and part"
+                      ? (vo.raw_count > 0 || vo.raw_products_extracted > 0
+                          ? `0 matching products (${vo.raw_count || vo.raw_products_extracted} catalogue listings checked)`
+                          : "0 matching products found for this vehicle and part")
                       : `Completed: ${voCount} parts found`,
                     productsExtracted: voCount,
                     elapsedSeconds: vo.elapsed_seconds || 0.1,

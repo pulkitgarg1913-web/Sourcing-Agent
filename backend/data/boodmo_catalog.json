@@ -528,16 +528,12 @@
       "primary": "Radiator",
       "alternates": [
         "Radiator Support",
-        "Radiator Fan Motor",
-        "Cooling Fan"
+        "Radiator Fan Motor"
       ]
     },
     "water pump": {
       "primary": "Water Pump",
-      "alternates": [
-        "Radiator",
-        "Timing Belt"
-      ]
+      "alternates": []
     },
     "clutch plate": {
       "primary": "Clutch Kit",
@@ -563,24 +559,18 @@
     "brake pads": {
       "primary": "Front Brake Pads",
       "alternates": [
-        "Rear Brake Pads",
-        "Brake Shoes",
-        "Front Brake Disc"
+        "Rear Brake Pads"
       ]
     },
     "front brake pads": {
       "primary": "Front Brake Pads",
       "alternates": [
-        "Front Brake Disc",
         "Rear Brake Pads"
       ]
     },
     "rear brake pads": {
       "primary": "Rear Brake Pads",
-      "alternates": [
-        "Rear Brake Disc",
-        "Brake Shoes"
-      ]
+      "alternates": []
     },
     "brake disc": {
       "primary": "Front Brake Disc",
@@ -591,27 +581,15 @@
     },
     "oil filter": {
       "primary": "Oil Filter",
-      "alternates": [
-        "Air Filter",
-        "Cabin Filter",
-        "Fuel Filter"
-      ]
+      "alternates": []
     },
     "air filter": {
       "primary": "Air Filter",
-      "alternates": [
-        "Cabin Filter",
-        "Oil Filter",
-        "Fuel Filter"
-      ]
+      "alternates": []
     },
     "cabin filter": {
       "primary": "Cabin Filter",
-      "alternates": [
-        "Air Filter",
-        "Oil Filter",
-        "Evaporator"
-      ]
+      "alternates": []
     },
     "fuel filter": {
       "primary": "Fuel Filter",
@@ -623,97 +601,72 @@
     },
     "fuel pump": {
       "primary": "Fuel Pump",
-      "alternates": [
-        "Fuel Filter"
-      ]
+      "alternates": []
     },
     "headlight": {
       "primary": "Headlight",
       "alternates": [
-        "Fog Lamp",
-        "Indicator",
-        "Tail Light"
+        "Headlight Components"
       ]
     },
     "headlamp": {
       "primary": "Headlight",
       "alternates": [
-        "Fog Lamp",
-        "Indicator",
-        "Tail Light"
+        "Headlight Components"
       ]
     },
     "tail light": {
       "primary": "Tail Light",
-      "alternates": [
-        "Headlight",
-        "Fog Lamp",
-        "Indicator"
-      ]
+      "alternates": []
     },
     "taillight": {
       "primary": "Tail Light",
-      "alternates": [
-        "Headlight",
-        "Fog Lamp",
-        "Indicator"
-      ]
+      "alternates": []
     },
     "fog lamp": {
       "primary": "Fog Lamp",
-      "alternates": [
-        "Headlight",
-        "Daytime Running Light"
-      ]
+      "alternates": []
     },
     "fog light": {
       "primary": "Fog Lamp",
       "alternates": [
-        "Headlight",
         "Daytime Running Light"
       ]
     },
     "spark plug": {
       "primary": "Spark Plug",
       "alternates": [
-        "Glow Plug",
-        "Air Filter"
+        "Glow Plug"
       ]
     },
     "spark plugs": {
       "primary": "Spark Plug",
       "alternates": [
-        "Glow Plug",
-        "Air Filter"
+        "Glow Plug"
       ]
     },
     "wiper blade": {
       "primary": "Wiper Blade Set",
       "alternates": [
-        "Wiper Blade",
-        "Wiper Arm"
+        "Wiper Blade"
       ]
     },
     "wiper": {
       "primary": "Wiper Blade Set",
       "alternates": [
-        "Wiper Blade",
-        "Wiper Arm",
-        "Wiper Motor"
+        "Wiper Blade"
       ]
     },
     "battery": {
       "primary": "Car Battery",
       "alternates": [
-        "Starter Battery",
-        "Alternator Assembly"
+        "Starter Battery"
       ]
     },
     "car battery": {
       "primary": "Car Battery",
       "alternates": [
-        "Starter Battery",
-        "Alternator Assembly"
+        "Starter Battery"
       ]
     },
     "shock absorber": {
@@ -726,150 +679,91 @@
     "shock": {
       "primary": "Front Shock Absorber",
       "alternates": [
-        "Rear Shock Absorber",
-        "Front Suspension Strut Assembly"
+        "Rear Shock Absorber"
       ]
     },
     "gear box": {
       "primary": "Manual Transmission",
-      "alternates": [
-        "Clutch Kit"
-      ]
+      "alternates": []
     },
     "gearbox": {
       "primary": "Manual Transmission",
-      "alternates": [
-        "Clutch Kit"
-      ]
+      "alternates": []
     },
     "transmission": {
       "primary": "Manual Transmission",
-      "alternates": [
-        "Clutch Kit"
-      ]
+      "alternates": []
     },
     "alternator": {
       "primary": "Alternator Assembly",
-      "alternates": [
-        "Car Battery",
-        "V-belt"
-      ]
+      "alternates": []
     },
     "intercooler": {
       "primary": "Intercooler",
-      "alternates": [
-        "Radiator",
-        "Oil Cooler"
-      ]
+      "alternates": []
     },
     "timing belt": {
       "primary": "Timing Belt",
       "alternates": [
         "Timing Belt Kit",
-        "Water Pump",
         "V-belt"
       ]
     },
     "horn": {
       "primary": "Horn",
-      "alternates": [
-        "Car Battery"
-      ]
+      "alternates": []
     },
     "cooling coil": {
       "primary": "Evaporator",
-      "alternates": [
-        "AC Condenser",
-        "Cabin Filter",
-        "Blower Motor"
-      ]
+      "alternates": []
     },
     "ac cooling coil": {
       "primary": "Evaporator",
-      "alternates": [
-        "AC Condenser",
-        "Cabin Filter"
-      ]
+      "alternates": []
     },
     "car cooling coil": {
       "primary": "Evaporator",
-      "alternates": [
-        "AC Condenser",
-        "Cabin Filter"
-      ]
+      "alternates": []
     },
     "evaporator coil": {
       "primary": "Evaporator",
-      "alternates": [
-        "AC Condenser",
-        "Cabin Filter"
-      ]
+      "alternates": []
     },
     "ac coil": {
       "primary": "Evaporator",
-      "alternates": [
-        "AC Condenser",
-        "Cabin Filter"
-      ]
+      "alternates": []
     },
     "evaporator": {
       "primary": "Evaporator",
-      "alternates": [
-        "AC Condenser",
-        "Cabin Filter",
-        "Blower Motor"
-      ]
+      "alternates": []
     },
     "condenser": {
       "primary": "AC Condenser",
-      "alternates": [
-        "AC Compressor",
-        "Evaporator",
-        "Radiator"
-      ]
+      "alternates": []
     },
     "ac condenser": {
       "primary": "AC Condenser",
-      "alternates": [
-        "AC Compressor",
-        "Evaporator",
-        "Radiator"
-      ]
+      "alternates": []
     },
     "compressor": {
       "primary": "AC Compressor",
-      "alternates": [
-        "AC Condenser",
-        "Evaporator"
-      ]
+      "alternates": []
     },
     "ac compressor": {
       "primary": "AC Compressor",
-      "alternates": [
-        "AC Condenser",
-        "Evaporator"
-      ]
+      "alternates": []
     },
     "blower motor": {
       "primary": "Blower Motor",
-      "alternates": [
-        "Cabin Filter",
-        "Evaporator"
-      ]
+      "alternates": []
     },
     "blower": {
       "primary": "Blower Motor",
-      "alternates": [
-        "Cabin Filter",
-        "Evaporator"
-      ]
+      "alternates": []
     },
     "expansion valve": {
       "primary": "Expansion Valve",
-      "alternates": [
-        "Evaporator",
-        "AC Condenser"
-      ]
+      "alternates": []
     },
     "outside mirrors": {
       "primary": "Outside Mirror",
@@ -943,10 +837,7 @@
     },
     "rvm": {
       "primary": "Outside Mirror",
-      "alternates": [
-        "Interior Mirror",
-        "Mirror Glass"
-      ]
+      "alternates": []
     },
     "bumper": {
       "primary": "Front Bumper",
@@ -1028,52 +919,38 @@
     "brake pad": {
       "primary": "Front Brake Pads",
       "alternates": [
-        "Rear Brake Pads",
-        "Brake Shoes",
-        "Front Brake Disc"
+        "Rear Brake Pads"
       ]
     },
     "front brake pad": {
       "primary": "Front Brake Pads",
       "alternates": [
-        "Front Brake Disc",
         "Rear Brake Pads"
       ]
     },
     "rear brake pad": {
       "primary": "Rear Brake Pads",
-      "alternates": [
-        "Rear Brake Disc",
-        "Brake Shoes"
-      ]
+      "alternates": []
     },
     "front pads": {
       "primary": "Front Brake Pads",
       "alternates": [
-        "Rear Brake Pads",
         "Front Brake Disc"
       ]
     },
     "rear pads": {
       "primary": "Rear Brake Pads",
       "alternates": [
-        "Front Brake Pads",
         "Rear Brake Disc"
       ]
     },
     "break pad": {
       "primary": "Front Brake Pads",
-      "alternates": [
-        "Rear Brake Pads",
-        "Brake Shoes"
-      ]
+      "alternates": []
     },
     "break pads": {
       "primary": "Front Brake Pads",
-      "alternates": [
-        "Rear Brake Pads",
-        "Brake Shoes"
-      ]
+      "alternates": []
     },
     "brake shoe": {
       "primary": "Brake Shoes",
@@ -1105,17 +982,11 @@
     },
     "break shoe": {
       "primary": "Brake Shoes",
-      "alternates": [
-        "Drum Brake",
-        "Rear Brake Pads"
-      ]
+      "alternates": []
     },
     "break shoes": {
       "primary": "Brake Shoes",
-      "alternates": [
-        "Drum Brake",
-        "Rear Brake Pads"
-      ]
+      "alternates": []
     },
     "brake discs": {
       "primary": "Front Brake Disc",
@@ -1169,164 +1040,96 @@
     "headlights": {
       "primary": "Headlight",
       "alternates": [
-        "Fog Lamp",
-        "Indicator",
-        "Tail Light"
+        "Headlight Components"
       ]
     },
     "headlamps": {
       "primary": "Headlight",
       "alternates": [
-        "Fog Lamp",
-        "Indicator",
-        "Tail Light"
+        "Headlight Components"
       ]
     },
     "front light": {
       "primary": "Headlight",
-      "alternates": [
-        "Fog Lamp",
-        "Indicator"
-      ]
+      "alternates": []
     },
     "head light": {
       "primary": "Headlight",
-      "alternates": [
-        "Fog Lamp",
-        "Indicator"
-      ]
+      "alternates": []
     },
     "head lamp": {
       "primary": "Headlight",
-      "alternates": [
-        "Fog Lamp",
-        "Indicator"
-      ]
+      "alternates": []
     },
     "tail lights": {
       "primary": "Tail Light",
-      "alternates": [
-        "Headlight",
-        "Fog Lamp",
-        "Indicator"
-      ]
+      "alternates": []
     },
     "taillights": {
       "primary": "Tail Light",
-      "alternates": [
-        "Headlight",
-        "Fog Lamp",
-        "Indicator"
-      ]
+      "alternates": []
     },
     "taillamp": {
       "primary": "Tail Light",
-      "alternates": [
-        "Headlight",
-        "Fog Lamp",
-        "Indicator"
-      ]
+      "alternates": []
     },
     "taillamps": {
       "primary": "Tail Light",
-      "alternates": [
-        "Headlight",
-        "Fog Lamp",
-        "Indicator"
-      ]
+      "alternates": []
     },
     "tail lamp": {
       "primary": "Tail Light",
-      "alternates": [
-        "Headlight",
-        "Fog Lamp",
-        "Indicator"
-      ]
+      "alternates": []
     },
     "tail lamps": {
       "primary": "Tail Light",
-      "alternates": [
-        "Headlight",
-        "Fog Lamp",
-        "Indicator"
-      ]
+      "alternates": []
     },
     "back light": {
       "primary": "Tail Light",
-      "alternates": [
-        "Headlight",
-        "Fog Lamp"
-      ]
+      "alternates": []
     },
     "rear light": {
       "primary": "Tail Light",
-      "alternates": [
-        "Headlight",
-        "Fog Lamp"
-      ]
+      "alternates": []
     },
     "rear lamp": {
       "primary": "Tail Light",
-      "alternates": [
-        "Headlight",
-        "Fog Lamp"
-      ]
+      "alternates": []
     },
     "fog lights": {
       "primary": "Fog Lamp",
       "alternates": [
-        "Headlight",
         "Daytime Running Light"
       ]
     },
     "fog lamps": {
       "primary": "Fog Lamp",
-      "alternates": [
-        "Headlight",
-        "Daytime Running Light"
-      ]
+      "alternates": []
     },
     "indicator": {
       "primary": "Indicator",
-      "alternates": [
-        "Headlight",
-        "Tail Light"
-      ]
+      "alternates": []
     },
     "indicators": {
       "primary": "Indicator",
-      "alternates": [
-        "Headlight",
-        "Tail Light"
-      ]
+      "alternates": []
     },
     "turn indicator": {
       "primary": "Indicator",
-      "alternates": [
-        "Headlight",
-        "Tail Light"
-      ]
+      "alternates": []
     },
     "side indicator": {
       "primary": "Indicator",
-      "alternates": [
-        "Headlight",
-        "Tail Light"
-      ]
+      "alternates": []
     },
     "drl": {
       "primary": "Daytime Running Light",
-      "alternates": [
-        "Fog Lamp",
-        "Headlight"
-      ]
+      "alternates": []
     },
     "daytime running light": {
       "primary": "Daytime Running Light",
-      "alternates": [
-        "Fog Lamp",
-        "Headlight"
-      ]
+      "alternates": []
     },
     "shock absorbers": {
       "primary": "Front Shock Absorber",
@@ -1393,45 +1196,27 @@
     },
     "suspension": {
       "primary": "Front Shock Absorber",
-      "alternates": [
-        "Rear Shock Absorber",
-        "Control Arm"
-      ]
+      "alternates": []
     },
     "control arm": {
       "primary": "Control Arm",
-      "alternates": [
-        "Front Shock Absorber",
-        "Front Coil Spring"
-      ]
+      "alternates": []
     },
     "lower arm": {
       "primary": "Control Arm",
-      "alternates": [
-        "Front Shock Absorber",
-        "Front Coil Spring"
-      ]
+      "alternates": []
     },
     "lower control arm": {
       "primary": "Control Arm",
-      "alternates": [
-        "Front Shock Absorber",
-        "Front Coil Spring"
-      ]
+      "alternates": []
     },
     "suspension arm": {
       "primary": "Control Arm",
-      "alternates": [
-        "Front Shock Absorber",
-        "Front Coil Spring"
-      ]
+      "alternates": []
     },
     "wishbone": {
       "primary": "Control Arm",
-      "alternates": [
-        "Front Shock Absorber",
-        "Front Coil Spring"
-      ]
+      "alternates": []
     },
     "coil spring": {
       "primary": "Front Coil Spring",
@@ -1484,10 +1269,7 @@
     },
     "pressure plate": {
       "primary": "Clutch Pressure Plate",
-      "alternates": [
-        "Clutch Disc",
-        "Clutch Kit"
-      ]
+      "alternates": []
     },
     "clutch bearing": {
       "primary": "Clutch Release Bearing",
@@ -1498,10 +1280,7 @@
     },
     "release bearing": {
       "primary": "Clutch Release Bearing",
-      "alternates": [
-        "Clutch Kit",
-        "Clutch Disc"
-      ]
+      "alternates": []
     },
     "clutch cable": {
       "primary": "Clutch Cable",
@@ -1512,16 +1291,11 @@
     },
     "manual transmission": {
       "primary": "Manual Transmission",
-      "alternates": [
-        "Clutch Kit"
-      ]
+      "alternates": []
     },
     "oil filters": {
       "primary": "Oil Filter",
-      "alternates": [
-        "Air Filter",
-        "Cabin Filter"
-      ]
+      "alternates": []
     },
     "mobil filter": {
       "primary": "Oil Filter",
@@ -1532,30 +1306,20 @@
     },
     "air filters": {
       "primary": "Air Filter",
-      "alternates": [
-        "Cabin Filter",
-        "Oil Filter"
-      ]
+      "alternates": []
     },
     "cabin filters": {
       "primary": "Cabin Filter",
-      "alternates": [
-        "Air Filter",
-        "Oil Filter"
-      ]
+      "alternates": []
     },
     "ac filter": {
       "primary": "Cabin Filter",
-      "alternates": [
-        "Air Filter",
-        "Evaporator"
-      ]
+      "alternates": []
     },
     "a/c filter": {
       "primary": "Cabin Filter",
       "alternates": [
-        "Air Filter",
-        "Evaporator"
+        "Air Filter"
       ]
     },
     "fuel filters": {
@@ -1568,29 +1332,25 @@
     "diesel filter": {
       "primary": "Fuel Filter",
       "alternates": [
-        "Fuel Pump",
         "Oil Filter"
       ]
     },
     "petrol filter": {
       "primary": "Fuel Filter",
       "alternates": [
-        "Fuel Pump",
         "Oil Filter"
       ]
     },
     "glow plug": {
       "primary": "Glow Plug",
       "alternates": [
-        "Spark Plug",
-        "Fuel Filter"
+        "Spark Plug"
       ]
     },
     "glow plugs": {
       "primary": "Glow Plug",
       "alternates": [
-        "Spark Plug",
-        "Fuel Filter"
+        "Spark Plug"
       ]
     },
     "water radiator": {
@@ -1610,126 +1370,94 @@
     "cooling fan": {
       "primary": "Radiator Fan Motor",
       "alternates": [
-        "Radiator",
         "Radiator Fan Cowling"
       ]
     },
     "fan motor": {
       "primary": "Radiator Fan Motor",
       "alternates": [
-        "Radiator",
         "Blower Motor"
       ]
     },
     "condensor": {
       "primary": "AC Condenser",
-      "alternates": [
-        "AC Compressor",
-        "Evaporator"
-      ]
+      "alternates": []
     },
     "cooling coils": {
       "primary": "Evaporator",
-      "alternates": [
-        "AC Condenser",
-        "Cabin Filter"
-      ]
+      "alternates": []
     },
     "evaporators": {
       "primary": "Evaporator",
-      "alternates": [
-        "AC Condenser",
-        "Cabin Filter"
-      ]
+      "alternates": []
     },
     "starter battery": {
       "primary": "Starter Battery",
       "alternates": [
-        "Car Battery",
-        "Alternator Assembly"
+        "Car Battery"
       ]
     },
     "alternators": {
       "primary": "Alternator Assembly",
-      "alternates": [
-        "Car Battery",
-        "V-belt"
-      ]
+      "alternates": []
     },
     "dynamo": {
       "primary": "Alternator Assembly",
-      "alternates": [
-        "Car Battery",
-        "V-belt"
-      ]
+      "alternates": []
     },
     "horns": {
       "primary": "Horn",
-      "alternates": [
-        "Car Battery"
-      ]
+      "alternates": []
     },
     "wipers": {
       "primary": "Wiper Blade Set",
       "alternates": [
-        "Wiper Blade",
-        "Wiper Arm",
-        "Wiper Motor"
+        "Wiper Blade"
       ]
     },
     "wiper blades": {
       "primary": "Wiper Blade Set",
       "alternates": [
-        "Wiper Blade",
-        "Wiper Arm"
+        "Wiper Blade"
       ]
     },
     "wiper motor": {
       "primary": "Wiper Motor",
-      "alternates": [
-        "Wiper Linkage",
-        "Wiper Arm"
-      ]
+      "alternates": []
     },
     "wiper arm": {
       "primary": "Wiper Arm",
       "alternates": [
-        "Wiper Blade Set",
-        "Wiper Motor"
+        "Wiper Blade Set"
       ]
     },
     "timing belt kit": {
       "primary": "Timing Belt Kit",
       "alternates": [
-        "Timing Belt",
-        "Water Pump"
+        "Timing Belt"
       ]
     },
     "fan belt": {
       "primary": "V-belt",
       "alternates": [
-        "Alternator Assembly",
         "Timing Belt"
       ]
     },
     "v belt": {
       "primary": "V-belt",
       "alternates": [
-        "Alternator Assembly",
         "Timing Belt"
       ]
     },
     "drive belt": {
       "primary": "V-belt",
       "alternates": [
-        "Alternator Assembly",
         "Timing Belt"
       ]
     },
     "serpentine belt": {
       "primary": "V-belt",
       "alternates": [
-        "Alternator Assembly",
         "Timing Belt"
       ]
     }

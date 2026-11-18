@@ -276,15 +276,22 @@ def instrument_session(thread_id: str, session: Session):
 
                     # Classify and intelligently rank listings before publishing to UI
                     from parts_agent import relevance
+                    from parts_agent.models import Listing
                     query_text = vendor_profile.hints.get("raw_request") or vendor_profile.part or ""
                     v_maker = vendor_profile.maker or vendor_profile.hints.get("make") or ""
                     v_model = vendor_profile.model or vendor_profile.hints.get("model") or ""
                     v_year = vendor_profile.year or str(vendor_profile.hints.get("year") or "")
                     v_variant = vendor_profile.variant or ""
+                    req_part = vendor_profile.requested_part or vendor_profile.hints.get("requested_part") or vendor_profile.part or ""
+                    raw_count = getattr(outcome, "raw_count", None)
+                    if raw_count is None:
+                        raw_count = len(outcome.listings) if outcome.listings else 0
+                    outcome.raw_count = raw_count
+
                     listings_dict = relevance.classify_listings(
                         listings_dict,
                         query=query_text,
-                        requested_part=vendor_profile.part or vendor_profile.category or vendor_profile.hints.get("part") or "",
+                        requested_part=req_part,
                         category=vendor_profile.category or vendor_profile.hints.get("category") or "",
                         target_maker=v_maker,
                         target_model=v_model,
@@ -292,6 +299,10 @@ def instrument_session(thread_id: str, session: Session):
                         target_variant=v_variant,
                     )
                     listings_dict = relevance.rank_listings(listings_dict, price_order="asc")
+                    outcome.listings = [
+                        Listing.from_dict(d) if not isinstance(d, Listing) else d
+                        for d in listings_dict
+                    ]
 
                     if outcome.status in ("failed", "extraction_failed", "timeout", "blocked"):
                         status_label = "Timeout" if outcome.status == "timeout" else "Blocked" if outcome.status == "blocked" else "Failed"
@@ -329,6 +340,11 @@ def instrument_session(thread_id: str, session: Session):
                     else:
                         is_no_results = len(listings_dict) == 0
                         status_str = "No Results" if is_no_results else "Completed"
+                        msg_str = (
+                            f"{s_title} extracted {raw_count} catalogue listings, but none matched requested {req_part}."
+                            if is_no_results and raw_count > 0
+                            else outcome.message
+                        )
                         sse_manager.publish(
                             thread_id,
                             {
@@ -337,9 +353,11 @@ def instrument_session(thread_id: str, session: Session):
                                 "vendor": v_name,
                                 "status": status_str,
                                 "products_found": len(listings_dict),
+                                "raw_products_extracted": raw_count,
+                                "raw_count": raw_count,
                                 "results": listings_dict,
                                 "source_url": outcome.source_url,
-                                "message": outcome.message,
+                                "message": msg_str,
                                 "elapsed_seconds": elapsed,
                             },
                         )
@@ -352,6 +370,8 @@ def instrument_session(thread_id: str, session: Session):
                                 "status": "no_results" if is_no_results else "ok",
                                 "product_count": len(listings_dict),
                                 "products_found": len(listings_dict),
+                                "raw_products_extracted": raw_count,
+                                "raw_count": raw_count,
                                 "results": listings_dict,
                                 "source_url": outcome.source_url,
                                 "elapsed_seconds": elapsed,
@@ -575,6 +595,8 @@ def publish_completed_outcomes(thread_id: str, state: dict):
                 "vendor": v_name,
                 "status": status_label,
                 "products_found": len(listings_dict),
+                "raw_products_extracted": vo.get("raw_count", len(listings_dict)),
+                "raw_count": vo.get("raw_count", len(listings_dict)),
                 "results": listings_dict,
                 "source_url": source_url,
                 "message": vo.get("message", f"{s_title} search completed."),

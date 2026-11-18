@@ -697,7 +697,11 @@ class AutoDukanAdapter:
         if self._car_model_id and part:
             query = part
         else:
-            terms = [t for t in [make, clean_model, part] if t]
+            year = str(profile.year or profile.hints.get("year") or "").strip()
+            trim = str(profile.hints.get("trim") or "").strip()
+            if trim.lower() in ("standard", "other", "not sure", "other / not sure"):
+                trim = ""
+            terms = [t for t in [make, clean_model, year, trim, part] if t]
             query = " ".join(terms).strip()
         self.progress(f"Falling back to search for '{query}' on AutoDukan")
         qs = f"search={urllib.parse.quote_plus(query)}&search_term={urllib.parse.quote_plus(query)}"
@@ -1034,6 +1038,11 @@ class AutoDukanAdapter:
         hint_key = {"brand": "make", "model": "model", "year": "year"}.get(field)
         hint = _clean(profile.hints.get(hint_key, "")) if hint_key else ""
         display_options = options
+        if field == "year" and not requested and not hint:
+            catalog_years = variants.get_model_catalog_years(profile.maker or "", profile.model or "")
+            if catalog_years:
+                display_options = sorted(list(dict.fromkeys(display_options + catalog_years)),
+                                         key=lambda y: (int(y) if y.isdigit() else 0))
 
         query = requested or hint
         matches = _matching_options(field, query, options) if query else []
@@ -1936,4 +1945,6 @@ class AutoDukanAdapter:
             listings=[item.to_dict() for item in listings],
             source_url=self.last_search_url or self.page.url,
             elapsed_seconds=elapsed,
+            raw_count=len(listings),
+            raw_listings=[item.to_dict() for item in listings],
         )

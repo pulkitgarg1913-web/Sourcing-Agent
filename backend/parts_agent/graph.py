@@ -31,7 +31,7 @@ from . import llm, variants
 from .auto_dukan import AutoDukanAdapter
 from .boodmo import BoodmoAdapter
 from .browser_manager import get_browser_manager
-from .models import NeedInput, SearchOutcome, VehicleProfile
+from .models import Listing, NeedInput, SearchOutcome, VehicleProfile
 from .perf_logger import perf_monitor
 
 log = logging.getLogger(__name__)
@@ -173,15 +173,36 @@ RESETS = {
 def _quick_hints(text: str, profile: VehicleProfile):
     """Pick up details mentioned in passing ("2021, diesel automatic") without an LLM call."""
     t = text.lower()
+    raw = text.strip()
     if not profile.year and (m := re.search(r"\b(19[89]\d|20[0-4]\d)\b", t)):
         profile.hints.setdefault("year", m.group(1))
     for fuel in ("diesel", "petrol", "cng", "electric"):
         if re.search(rf"\b{fuel}\b", t):
-            profile.hints.setdefault("fuel", fuel)
-    if re.search(r"\b(automatic|auto)\b", t):
+            profile.hints.setdefault("fuel", fuel.lower())
+            break
+    if re.search(r"\b(?:imt)\b", t):
+        profile.hints.setdefault("transmission", "iMT")
+    elif re.search(r"\b(?:ivt)\b", t):
+        profile.hints.setdefault("transmission", "IVT")
+    elif re.search(r"\b(?:dct)\b", t):
+        profile.hints.setdefault("transmission", "DCT")
+    elif re.search(r"\b(?:dsg)\b", t):
+        profile.hints.setdefault("transmission", "DSG")
+    elif re.search(r"\b(?:amt|ags)\b", t):
+        profile.hints.setdefault("transmission", "AMT")
+    elif re.search(r"\b(?:automatic|auto|\bat\b)\b", t):
         profile.hints.setdefault("transmission", "automatic")
-    elif re.search(r"\bmanual\b", t):
+    elif re.search(r"\b(?:manual|\bmt\b)\b", t):
         profile.hints.setdefault("transmission", "manual")
+    if eng := re.search(r"(?<![a-z0-9])([0-5]\.\d|[0-5]\d?\.\d|\b[1-5]\b)\s*(?:l|litre|liter)\b", raw, re.I):
+        profile.hints.setdefault("engine", f"{eng.group(1)}L")
+    elif eng := re.search(r"(?<![a-z0-9])([0-5]\.\d)(?![a-z0-9])", raw):
+        profile.hints.setdefault("engine", f"{eng.group(1)}L")
+    if tm := re.search(r"(?<![a-z0-9])(GTX\+|GTX\s*PLUS|GTX|HTX\+|HTX\s*PLUS|HTX|HTK\+|HTK\s*PLUS|HTK|HTE|X[- ]?LINE|XZA?\+|XZA|XZ\+|XZ|XT|XM|XE|CREATIVE\+|CREATIVE|FEARLESS\+|FEARLESS|PURE\+|PURE|SMART\+|SMART|SX\s*\(?O\)?|SX\s*PLUS|SX\s*TECH|SX|EX|ZXI\+|ZXI|VXI|LXI|ALPHA|ZETA|DELTA|SIGMA|AX7\s*L?|AX5|AX3|LX|AX\s*OPT|AX)(?![a-z0-9])", raw, re.I):
+        trim_str = tm.group(1).upper().replace(" PLUS", "+").replace("PLUS", "+")
+        if trim_str in ("X LINE", "X-LINE"):
+            trim_str = "X-Line"
+        profile.hints.setdefault("trim", trim_str)
 
 
 def _profiles_from_state(state: State) -> dict[str, VehicleProfile]:
@@ -277,10 +298,17 @@ async def understand(state: State, config) -> State:
     except Exception as e:
         log.warning("request parsing failed: %s", e)
         parsed = llm.ParsedRequest(part=text)
-    profile.part = parsed.part
+    req_part = parsed.part or text
+    if req_part and text:
+        m = re.search(rf"\b({re.escape(req_part)}s?)\b", text, re.I)
+        if m:
+            req_part = m.group(1).capitalize()
+    profile.part = req_part or parsed.part
+    profile.requested_part = req_part or parsed.part or text
     profile.hints = {k: v for k, v in parsed.model_dump().items()
                      if v and k not in ("part",)}
     profile.hints["raw_request"] = text
+    profile.hints["requested_part"] = profile.requested_part
     _quick_hints(text, profile)
     # All adapters start from the mechanic's request. Supplier-specific
     # categories and selected variant labels are resolved and stored separately.
@@ -321,6 +349,92 @@ async def understand(state: State, config) -> State:
 async def navigate(state: State, config) -> State:
     profiles = _profiles_from_state(state)
     session = _session(config)
+
+    boodmo_p = profiles.get("boodmo")
+    autodukan_p = profiles.get("autodukan")
+    active_p = boodmo_p or autodukan_p
+
+    maker = (boodmo_p and boodmo_p.maker) or (autodukan_p and autodukan_p.maker) or (active_p and active_p.hints.get("make")) or ""
+    model = (boodmo_p and boodmo_p.model) or (autodukan_p and autodukan_p.model) or (active_p and active_p.hints.get("model")) or ""
+    year = (boodmo_p and boodmo_p.year) or (autodukan_p and autodukan_p.year) or (active_p and active_p.hints.get("year")) or ""
+    fuel = (active_p and active_p.hints.get("fuel")) or ""
+    transmission = (active_p and active_p.hints.get("transmission")) or ""
+    trim = (active_p and active_p.hints.get("trim")) or ""
+    engine = (active_p and active_p.hints.get("engine")) or ""
+    part = (active_p and (active_p.part or active_p.category)) or "parts"
+
+    # Conversational Clarification Flow (before supplier search)
+    if not state.get("confirmed"):
+        if maker and model:
+            # Step 2: Ask model year if missing
+            if not year:
+                catalog_years = variants.get_model_catalog_years(maker, model)
+                need = NeedInput(
+                    field="year",
+                    question=f"Which model year is your {maker.title()} {model.title()}?",
+                    options=catalog_years,
+                )
+                return _profile_updates(profiles) | {"pending": need.to_dict()}
+
+            is_seltos = (maker.lower(), model.lower()) == ("kia", "seltos") or model.lower() == "seltos"
+
+            # Step 3: Ask fuel / engine configuration if missing (for Seltos or where fuels exist)
+            if is_seltos and not fuel:
+                fuels = variants.get_model_fuels(maker, model)
+                if len(fuels) > 1:
+                    need = NeedInput(
+                        field="variant_attr",
+                        attr="fuel",
+                        question=f"Is it {' or '.join(f.lower() for f in fuels)}?",
+                        options=fuels,
+                    )
+                    return _profile_updates(profiles) | {"pending": need.to_dict()}
+
+            # Step 3b: Ask transmission if missing (for Seltos)
+            if is_seltos and not transmission:
+                transmissions = variants.get_model_transmissions(maker, model)
+                need = NeedInput(
+                    field="variant_attr",
+                    attr="transmission",
+                    question="Which transmission is it: manual or automatic?",
+                    options=transmissions,
+                )
+                return _profile_updates(profiles) | {"pending": need.to_dict()}
+
+            # Step 4: Ask vehicle trim / variant if missing (for Seltos)
+            if is_seltos and not trim:
+                trims = variants.get_model_trims(maker, model)
+                if trims:
+                    need = NeedInput(
+                        field="trim",
+                        question=f"Which variant or trim is your {maker.title()} {model.title()}?",
+                        options=trims,
+                    )
+                    return _profile_updates(profiles) | {"pending": need.to_dict()}
+
+            # Step 5: Confirm vehicle profile
+            if getattr(session, "require_confirmation", False):
+                lines = [f"I will search for {part} for:"]
+                lines.append(f"- Make: {maker.title()}")
+                lines.append(f"- Model: {model.title()}")
+                lines.append(f"- Year: {year}")
+                lines.append(f"- Variant / Trim: {trim or 'Standard'}")
+                if fuel:
+                    lines.append(f"- Fuel: {fuel.title()}")
+                if engine:
+                    lines.append(f"- Engine: {engine}")
+                if transmission:
+                    lines.append(f"- Transmission: {transmission.upper() if len(transmission) <= 4 else transmission.title()}")
+                lines.append("Would you like to search with these details, or change anything?")
+                car_label = f"{maker} {model} {year} {trim or ''}".strip()
+                need = {
+                    "field": "confirm_search",
+                    "question": "\n".join(lines),
+                    "options": ["Confirm & Search", "Change Details"],
+                    "candidate": car_label,
+                    "vendor": "all",
+                }
+                return _profile_updates(profiles) | {"pending": need}
 
     async def advance_vendor(name: str, adapter):
         try:
@@ -383,12 +497,26 @@ async def navigate(state: State, config) -> State:
         model = (boodmo_p and boodmo_p.model) or (profiles.get("autodukan") and profiles["autodukan"].model) or ""
         year = (boodmo_p and boodmo_p.year) or (profiles.get("autodukan") and profiles["autodukan"].year) or ""
         variant = (boodmo_p and boodmo_p.variant) or (profiles.get("autodukan") and profiles["autodukan"].variant) or ""
+        trim = (active_p and active_p.hints.get("trim")) or ""
+        fuel = (active_p and active_p.hints.get("fuel")) or ""
+        engine = (active_p and active_p.hints.get("engine")) or ""
+        transmission = (active_p and active_p.hints.get("transmission")) or ""
         part = (active_p and (active_p.part or active_p.category)) or "parts"
-        car_label = " ".join(x for x in (maker, model, year, variant) if x)
+        lines = [f"I will search for {part} for:"]
+        if maker: lines.append(f"- Make: {maker.title()}")
+        if model: lines.append(f"- Model: {model.title()}")
+        if year: lines.append(f"- Year: {year}")
+        if trim: lines.append(f"- Variant / Trim: {trim}")
+        elif variant: lines.append(f"- Variant / Trim: {variant}")
+        if fuel: lines.append(f"- Fuel: {fuel.title()}")
+        if engine: lines.append(f"- Engine: {engine}")
+        if transmission: lines.append(f"- Transmission: {transmission.upper() if len(transmission) <= 4 else transmission.title()}")
+        lines.append("Would you like to search with these details, or change anything?")
+        car_label = f"{maker} {model} {year} {trim or variant or ''}".strip()
         need = {
             "field": "confirm_search",
-            "question": f"Ready to search suppliers for {part} fitting {car_label}?",
-            "options": ["Confirm & Search Suppliers", "Change Vehicle Details"],
+            "question": "\n".join(lines),
+            "options": ["Confirm & Search", "Change Details"],
             "candidate": car_label,
             "vendor": "all",
         }
@@ -435,23 +563,54 @@ async def interpret(state: State, config) -> State:
             return _profile_updates(profiles) | {
                 "pending": None, "confirmed": True, "turns": [turn | {"resolved": "confirmed"}]
             }
-        # If user asked to modify or gave new hints, let hints be applied
-        p = dict(p, note="You can confirm or tell me which vehicle detail to change.")
+        # If user asked to modify or gave new hints, apply them
+        _quick_hints(ans, profile)
+        for k in ("year", "fuel", "transmission", "engine", "trim"):
+            if k in profile.hints:
+                for vp in profiles.values():
+                    vp.hints[k] = profile.hints[k]
+                    if k == "year":
+                        vp.year = profile.hints[k]
+        turn["resolved"] = "modify"
+        return _profile_updates(profiles) | {
+            "pending": None, "confirmed": False, "turns": [turn | {"resolved": "modify"}]
+        }
+
+    if p["field"] == "confirm":
         yes = llm.is_yes(ans)
-        orig = p["original"]
+        orig = p.get("original", {})
         if yes:
             vendor = orig.get("vendor", vendor)
-            _apply(profiles[vendor], orig, p["candidate"], config, profiles, vendor)
-            return _resolved(profiles, turn, p["candidate"])
+            _apply(profiles[vendor], orig, p.get("candidate"), config, profiles, vendor)
+            return _resolved(profiles, turn, p.get("candidate"))
         if yes is False:
             orig = dict(orig, note="Okay.")
             return _profile_updates(profiles) | {
                 "pending": orig, "turns": [turn | {"resolved": None}]
             }
-        p = orig   # they answered the original question instead of yes/no; match it below
+        p = orig
         vendor = p.get("vendor", vendor)
         profile = profiles[vendor]
         siblings = _other_profiles(profiles, vendor)
+
+    if p["field"] == "trim":
+        if DONT_KNOW.search(ans) or any(phrase in ans.lower() for phrase in ("other", "not sure", "don't know", "skip", "unknown")):
+            val = "Standard"
+            profile.hints["trim_unverified"] = True
+            _apply(profile, p, val, config, profiles, vendor)
+            return _resolved(profiles, turn, val)
+        options = p.get("options") or []
+        matched_idx = llm.match_option_locally(ans, options)
+        if matched_idx is not None and 0 <= matched_idx < len(options):
+            val = options[matched_idx]
+            if val in ("Other / Not sure", "Other", "Not sure"):
+                val = "Standard"
+                profile.hints["trim_unverified"] = True
+        else:
+            val = ans.strip()
+            profile.hints["trim_unverified"] = True
+        _apply(profile, p, val, config, profiles, vendor)
+        return _resolved(profiles, turn, val)
 
     if p["field"] == "variant_attr" and p.get("candidate"):
         # "Just to check: is it XZ plus?" -- yes applies it, no drops it, anything
@@ -478,13 +637,19 @@ async def interpret(state: State, config) -> State:
             except Exception:
                 parsed = llm.ParsedRequest(part=ans)
             resolved_part = parsed.part or ans
+            if resolved_part and ans:
+                m = re.search(rf"\b({re.escape(resolved_part)}s?)\b", ans, re.I)
+                if m:
+                    resolved_part = m.group(1).capitalize()
             for k, v in parsed.model_dump().items():
                 if v and k != "part":
                     for vp in profiles.values():
                         vp.hints.setdefault(k, v)
         for vendor_profile in profiles.values():
             vendor_profile.part = resolved_part
+            vendor_profile.requested_part = resolved_part
             vendor_profile.category = None
+            vendor_profile.hints["requested_part"] = resolved_part
             _quick_hints(ans, vendor_profile)
         car = " ".join(x for x in (profile.maker or profile.hints.get("make"), profile.model or profile.hints.get("model")) if x)
         _session(config).announce(f"Okay, looking for {_a(resolved_part)}{resolved_part}"
@@ -610,11 +775,16 @@ def _apply(profile: VehicleProfile, need: dict, value: str, config,
                     sibling.variant_filters = {}
     elif f == "variant_attr":
         profile.variant_filters[need["attr"]] = value
+        profile.hints[need["attr"]] = value
         for sibling in _other_profiles(profiles, vendor):
             if sibling.hints.get(need["attr"]) != value:
                 sibling.variant = None
                 sibling.variant_filters = {}
             sibling.hints[need["attr"]] = value
+    elif f == "trim":
+        profile.hints["trim"] = value
+        for sibling in _other_profiles(profiles, vendor):
+            sibling.hints["trim"] = value
     elif f == "variant":
         profile.variant = value
         for sibling in _other_profiles(profiles, vendor):
@@ -680,7 +850,7 @@ async def collect(state: State, config) -> State:
                     for l in vo_listings
                 ],
                 query=state.get("request", ""),
-                requested_part=profile.part or profile.category or profile.hints.get("part") or "",
+                requested_part=profile.requested_part or profile.hints.get("requested_part") or profile.part or profile.category or "",
                 category=profile.category or profile.hints.get("category") or "",
                 target_maker=target_maker,
                 target_model=target_model,
@@ -795,22 +965,81 @@ async def collect(state: State, config) -> State:
         }
 
         outcomes = []
+        from . import relevance
+        target_maker = profile.maker or profile.hints.get("make") or ""
+        target_model = profile.model or profile.hints.get("model") or ""
+        target_year = profile.year or str(profile.hints.get("year") or "")
+        target_variant = profile.variant or ""
+        req_part = profile.requested_part or profile.hints.get("requested_part") or profile.part or profile.category or ""
+
         for fut in asyncio.as_completed(supplier_tasks.keys()):
             outcome = await fut
-            outcomes.append(outcome)
             elapsed = getattr(outcome, "elapsed_seconds", 0.0)
-            n_products = len(outcome.listings) if outcome.listings else 0
-            s.announce(f"{outcome.vendor.title()} completed: {n_products} parts found ({elapsed:.1f}s)")
+
+            raw_count = getattr(outcome, "raw_count", None)
+            if raw_count is None:
+                raw_count = len(outcome.listings) if outcome.listings else 0
+            outcome.raw_count = raw_count
+            raw_listings = list(outcome.listings) if outcome.listings else []
+            outcome.raw_listings = raw_listings
+
+            v_name = outcome.vendor
+            s_title = "Boodmo" if v_name == "boodmo" else "AutoDukan" if v_name == "autodukan" else v_name.title()
+
+            classified_vo = relevance.classify_listings(
+                [
+                    {
+                        **(l.to_dict() if hasattr(l, "to_dict") else dict(l)),
+                        "vendor": v_name,
+                        "supplier": s_title,
+                        "supplier_name": s_title,
+                        "catalog_vehicle": outcome.vehicle_label or "",
+                    }
+                    for l in raw_listings
+                ],
+                query=state.get("request", ""),
+                requested_part=req_part,
+                category=profile.category or profile.hints.get("category") or "",
+                target_maker=target_maker,
+                target_model=target_model,
+                target_year=target_year,
+                target_variant=target_variant,
+            )
+            ranked_listings = relevance.rank_listings(classified_vo, price_order="asc")
+            outcome.listings = [
+                Listing.from_dict(d) if not isinstance(d, Listing) else d
+                for d in ranked_listings
+            ]
+            rel_count = len(ranked_listings)
+
+            if rel_count > 0:
+                s.announce(f"{s_title} completed: {rel_count} matching {req_part.lower() or 'parts'} found ({elapsed:.1f}s)")
+            elif raw_count > 0:
+                s.announce(f"{s_title} completed: {raw_count} catalogue listings extracted, 0 matching {req_part.lower() or 'parts'} ({elapsed:.1f}s)")
+            else:
+                s.announce(f"{s_title} completed: 0 parts found ({elapsed:.1f}s)")
+
             if hasattr(s, "on_supplier_completed") and callable(s.on_supplier_completed):
                 try:
                     s.on_supplier_completed(outcome)
                 except Exception as cb_err:
                     log.warning("Error in on_supplier_completed callback: %s", cb_err)
 
+            outcomes.append(outcome)
+
         total_elapsed = round(time.time() - t_start_all, 2)
         perf_monitor.log_search_completed(thread_id, total_elapsed)
 
-    vendor_outcomes = [asdict(outcome) for outcome in outcomes]
+    vendor_outcomes = []
+    for outcome in outcomes:
+        vo = asdict(outcome)
+        v_name = vo.get("vendor", "")
+        s_title = "Boodmo" if v_name == "boodmo" else "AutoDukan" if v_name == "autodukan" else v_name.title()
+        vo["vendor"] = v_name
+        vo["supplier"] = s_title
+        vo["supplier_name"] = s_title
+        vo["raw_count"] = getattr(outcome, "raw_count", len(outcome.listings))
+        vendor_outcomes.append(vo)
 
     # Save newly scraped live outcomes to cache for 24 hours
     try:
@@ -820,48 +1049,12 @@ async def collect(state: State, config) -> State:
                 model=profile.model,
                 year=profile.year,
                 variant=profile.variant,
-                part=profile.part or profile.category,
+                part=req_part,
                 outcomes=vendor_outcomes,
                 ttl_hours=24.0,
             )
     except Exception as exc:
         log.warning("Could not cache search outcomes: %s", exc)
-
-    from . import relevance
-
-    target_maker = profile.maker or profile.hints.get("make") or ""
-    target_model = profile.model or profile.hints.get("model") or ""
-    target_year = profile.year or str(profile.hints.get("year") or "")
-    target_variant = profile.variant or ""
-
-    # Classify listings within each vendor_outcome ensuring vendor and supplier attributes
-    for vo in vendor_outcomes:
-        v_name = vo.get("vendor", "")
-        s_title = "Boodmo" if v_name == "boodmo" else "AutoDukan" if v_name == "autodukan" else v_name.title()
-        vo["vendor"] = v_name
-        vo["supplier"] = s_title
-        vo["supplier_name"] = s_title
-        vo_listings = vo.get("listings") or []
-        classified_vo = relevance.classify_listings(
-            [
-                {
-                    **(l.to_dict() if hasattr(l, "to_dict") else dict(l)),
-                    "vendor": v_name,
-                    "supplier": s_title,
-                    "supplier_name": s_title,
-                    "catalog_vehicle": vo.get("vehicle_label", ""),
-                }
-                for l in vo_listings
-            ],
-            query=state.get("request", ""),
-            requested_part=profile.part or profile.category or profile.hints.get("part") or "",
-            category=profile.category or profile.hints.get("category") or "",
-            target_maker=target_maker,
-            target_model=target_model,
-            target_year=target_year,
-            target_variant=target_variant,
-        )
-        vo["listings"] = relevance.rank_listings(classified_vo, price_order="asc")
 
     all_listings = [
         listing
@@ -913,44 +1106,86 @@ def _name(l: dict) -> str:
 
 
 def summarize(profile: VehicleProfile, outcome: dict) -> str:
+    req_part = (
+        profile.requested_part
+        or profile.hints.get("requested_part")
+        or profile.part
+        or profile.category
+        or "parts"
+    ).strip().title()
+
+    vehicle = " ".join(str(value) for value in (
+        profile.maker, profile.model, profile.year, profile.variant
+    ) if value) or "the requested vehicle"
+
     if outcome.get("vendor_outcomes") is not None:
+        prefix = f"Your {vehicle} {req_part} search is complete."
         summaries = [
             _summarize_vendor(profile, vendor_outcome)
             for vendor_outcome in outcome["vendor_outcomes"]
         ]
-        return " ".join(summary for summary in summaries if summary)
+        combined = " ".join(summary for summary in summaries if summary)
+        return f"{prefix} {combined}".strip()
 
     return _summarize_boodmo(profile, outcome)
 
 
 def _summarize_vendor(profile: VehicleProfile, outcome: dict) -> str:
-    if outcome.get("vendor") == "boodmo":
-        return _summarize_boodmo(profile, outcome)
-
-    vendor = {
-        "autodukan": "AutoDukan",
-    }.get(outcome.get("vendor"), outcome.get("vendor") or "Supplier")
+    vendor_key = (outcome.get("vendor") or "").lower()
+    vendor = "Boodmo" if vendor_key == "boodmo" else "AutoDukan" if vendor_key == "autodukan" else (outcome.get("supplier") or vendor_key.title() or "Supplier")
+    req_part = (
+        profile.requested_part
+        or profile.hints.get("requested_part")
+        or profile.part
+        or profile.category
+        or "parts"
+    ).strip().title()
     label = outcome.get("vehicle_label") or " ".join(x for x in (
         profile.maker, profile.model, profile.year, profile.variant,
-    ) if x)
-    if outcome.get("status") == "no_results":
-        return outcome.get("message") or f"{vendor} returned no product listings for {label}."
-    if outcome.get("status") != "ok":
+    ) if x) or "the requested vehicle"
+
+    status = outcome.get("status")
+    if status in ("challenge_detected", "blocked"):
+        return f"{vendor} access was blocked or bot-protected; automated search safely skipped."
+    if status == "timeout":
+        return f"{vendor} search timed out."
+    if status != "ok" and status != "no_results":
         return f"{vendor}: {outcome.get('message') or 'search failed.'}"
+
     listings = outcome.get("listings") or []
-    if not listings:
-        return f"{vendor} returned no product listings for {label}."
-    verified = [l for l in listings if l.get("fitment") == "verified"]
-    in_stock = [l for l in listings if l.get("available") is True]
-    if in_stock:
-        cheapest = min(in_stock, key=lambda l: l.get("price") or float("inf"))
-        price_str = _rupees(cheapest["price"]) if cheapest.get("price") is not None else ""
-        return (f"{vendor} lists {len(listings)} verified part{'s' if len(listings) != 1 else ''} for {label}. "
-                f"Cheapest in stock is {cheapest.get('brand')} {cheapest.get('title')} at {price_str}.")
-    if verified:
-        return f"{vendor} lists {len(listings)} verified part{'s' if len(listings) != 1 else ''} for {label}."
-    return (f"{vendor} returned {len(listings)} listing{'s' if len(listings) != 1 else ''} for {label}. "
-            "Confirm compatibility before purchase.")
+    rel_count = len(listings)
+    raw_count = outcome.get("raw_count")
+    if raw_count is None:
+        raw_count = len(outcome.get("raw_listings", [])) or rel_count
+
+    if rel_count > 0:
+        in_stock = [l for l in listings if l.get("available") is True]
+        if in_stock:
+            cheapest = min(in_stock, key=lambda l: l.get("price") or float("inf"))
+            o = cheapest.get("best_offer") or {}
+            price_val = cheapest.get("price")
+            price_str = _rupees(price_val) if price_val is not None else ""
+            brand_title = f"{cheapest.get('brand', '').title()} {cheapest.get('title', '').title()}".strip()
+            part_str = f", part {cheapest.get('part_number')}" if cheapest.get("part_number") else ""
+            seller = cheapest.get("seller") or o.get("seller")
+            dispatch = cheapest.get("dispatch") or o.get("dispatch")
+            if seller:
+                seller_info = f" from seller {seller}, in stock, dispatch in {dispatch or '24–48 hours'}."
+            else:
+                seller_info = f" at {price_str}."
+            main_text = f"{vendor} returned {rel_count} relevant product{'s' if rel_count != 1 else ''}. Cheapest in stock: {brand_title}{part_str}, {price_str}{seller_info}".strip()
+            other_items = [l for l in in_stock if l != cheapest][:2]
+            if other_items:
+                extras = [f"{l.get('brand', '').title()} {l.get('title', '').title()} ({'part ' + l['part_number'] + ', ' if l.get('part_number') else ''}{_rupees(l['price']) if l.get('price') is not None else ''})".strip() for l in other_items]
+                main_text += f" Also in stock: {'; '.join(extras)}."
+            return main_text
+        return f"{vendor} returned {rel_count} relevant product{'s' if rel_count != 1 else ''}."
+
+    if raw_count > 0:
+        quantifier = "neither" if raw_count == 2 else "none"
+        return f"{vendor} extracted {raw_count} catalogue listing{'s' if raw_count != 1 else ''}, but {quantifier} matched the requested {req_part} category."
+
+    return f"{vendor} returned no matching products."
 
 
 def _summarize_boodmo(profile: VehicleProfile, outcome: dict) -> str:
@@ -967,7 +1202,22 @@ def _summarize_boodmo(profile: VehicleProfile, outcome: dict) -> str:
     in_stock = [l for l in exact if l.get("available") is True]
     unchecked = [l for l in exact if l.get("available") is None]
     n = len(exact)
-    active_cat = profile.hints.get("resolved_alternate_category") or profile.category or profile.part or "parts"
+    raw_count = outcome.get("raw_count")
+    if raw_count is None:
+        raw_count = len(outcome.get("raw_listings", [])) or len(ls)
+
+    active_cat = (
+        profile.requested_part
+        or profile.hints.get("requested_part")
+        or profile.part
+        or profile.category
+        or "parts"
+    ).strip().title()
+
+    if n == 0 and raw_count > 0:
+        quantifier = "neither" if raw_count == 2 else "none"
+        return f"For the {vehicle}: Boodmo extracted {raw_count} catalogue listing{'s' if raw_count != 1 else ''}, but {quantifier} matched the requested {active_cat} category."
+
     lines = [f"For the {vehicle}, Boodmo lists {n} part{'s' if n != 1 else ''} under "
              f"{active_cat} that fit this variant."]
     if in_stock:
