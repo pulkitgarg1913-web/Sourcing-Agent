@@ -51,7 +51,6 @@ MODEL_CATALOG_YEARS: dict[tuple[str, str], list[str]] = {
     ("tata", "punch"): [str(y) for y in range(2021, 2027)],
     ("tata", "altroz"): [str(y) for y in range(2020, 2027)],
     ("tata", "tiago"): [str(y) for y in range(2016, 2027)],
-    ("tata", "nano"): [str(y) for y in range(2009, 2019)],
     ("mahindra", "thar"): [str(y) for y in range(2010, 2027)],
     ("mahindra", "scorpio"): [str(y) for y in range(2002, 2027)],
     ("mahindra", "xuv700"): [str(y) for y in range(2021, 2027)],
@@ -78,7 +77,6 @@ MODEL_TRIMS: dict[tuple[str, str], list[str]] = {
     ("tata", "harrier"): ["Smart", "Pure", "Adventure", "Fearless", "XE", "XM", "XT", "XZ", "XZ+", "Other / Not sure"],
     ("tata", "safari"): ["Smart", "Pure", "Adventure", "Accomplished", "XE", "XM", "XT", "XZ", "XZ+", "Other / Not sure"],
     ("tata", "punch"): ["Pure", "Adventure", "Accomplished", "Creative", "Other / Not sure"],
-    ("tata", "nano"): ["Standard", "CX", "LX", "Other / Not sure"],
     ("mahindra", "thar"): ["AX", "AX Opt", "LX", "Earth Edition", "Other / Not sure"],
     ("mahindra", "scorpio"): ["Classic S", "Classic S11", "Z2", "Z4", "Z6", "Z8", "Z8 Select", "Z8L", "Other / Not sure"],
     ("mahindra", "xuv700"): ["MX", "AX3", "AX5", "AX5 Select", "AX7", "AX7L", "Other / Not sure"],
@@ -88,11 +86,6 @@ MODEL_TRIMS: dict[tuple[str, str], list[str]] = {
     ("maruti", "baleno"): ["Sigma", "Delta", "Zeta", "Alpha", "Other / Not sure"],
     ("maruti suzuki", "brezza"): ["LXI", "VXI", "ZXI", "ZXI+", "Other / Not sure"],
     ("maruti", "brezza"): ["LXI", "VXI", "ZXI", "ZXI+", "Other / Not sure"],
-    ("honda", "city"): ["SV", "V", "VX", "ZX", "Elegance", "Other / Not sure"],
-    ("honda", "amaze"): ["E", "S", "VX", "Other / Not sure"],
-    ("honda", "elevate"): ["SV", "V", "VX", "ZX", "Other / Not sure"],
-    ("toyota", "innova"): ["G", "GX", "VX", "ZX", "Other / Not sure"],
-    ("toyota", "fortuner"): ["Standard", "Legender", "GR-S", "Other / Not sure"],
 }
 
 # Known model fuel configurations
@@ -153,41 +146,6 @@ def get_model_transmissions(maker: str, model: str) -> list[str]:
     return ["Manual", "Automatic"]
 
 
-def get_maker_models(maker: str) -> list[str]:
-    """Retrieve known models for a given vehicle make/brand."""
-    mk = (maker or "").strip().lower()
-    models = []
-    for (m_maker, m_model) in MODEL_CATALOG_YEARS:
-        if m_maker == mk or mk in m_maker:
-            name = m_model.title()
-            if name not in models:
-                models.append(name)
-    # Common Indian market fallbacks by make
-    make_defaults = {
-        "honda": ["City", "Amaze", "Elevate", "Jazz"],
-        "hyundai": ["Creta", "Venue", "i20", "Verna", "i10"],
-        "kia": ["Seltos", "Sonet", "Carens"],
-        "tata": ["Nexon", "Punch", "Harrier", "Safari", "Altroz", "Tiago", "Nano"],
-        "mahindra": ["Thar", "Scorpio", "XUV700", "Bolero"],
-        "maruti": ["Swift", "Baleno", "Brezza", "Dzire", "Ertiga", "Alto"],
-        "maruti suzuki": ["Swift", "Baleno", "Brezza", "Dzire", "Ertiga", "Alto"],
-        "toyota": ["Fortuner", "Innova", "Glanza", "Hyryder"],
-    }
-    for def_make, def_models in make_defaults.items():
-        if def_make == mk or mk in def_make:
-            for dm in def_models:
-                if dm not in models:
-                    models.append(dm)
-    return models
-
-
-ENGINE_BADGES = {
-    "CRDI", "SMARTSTREAM", "REVOTRON", "REVOTORQ", "KAPPA", "VTVT", "TSI", "TDI", "MPI",
-    "DDIS", "MHAWK", "MCLUTCH", "THP", "VTEC", "IVTEC", "ECOBOOST", "DICOR", "VARICOR",
-    "TURBO", "TGDI", "GDI", "HYBRID"
-}
-
-
 def parse_label(label: str) -> dict:
     """Split a modification label into comparable attributes."""
     parts = [p.strip() for p in label.split("/") if p.strip()]
@@ -201,14 +159,9 @@ def parse_label(label: str) -> dict:
     if tokens and tokens[-1].upper() in TRANSMISSIONS:
         attrs["transmission"] = tokens.pop().upper()
     if tokens:
-        if tokens[0].upper() in ENGINE_BADGES:
-            badge = tokens.pop(0).upper()
-            attrs["engine"] = f"{attrs['engine'] or ''} {badge}".strip()
-        if tokens:
-            attrs["trim"] = tokens[0].upper()
-            rest = [t for t in tokens[1:]]
-        else:
-            rest = []
+        # Trim is the first token (XZ+, XZA, SX(O)...); drive layout etc. stays in spec.
+        attrs["trim"] = tokens[0].upper()
+        rest = [t for t in tokens[1:]]
     else:
         rest = []
 
@@ -287,13 +240,7 @@ def apply_hints(labels: list[str], hints: dict) -> tuple[list[str], dict, dict]:
 
 
 def match_attr_value(attr: str, hint: str, values: set) -> str | None:
-    if not hint:
-        return None
     h = hint.strip().upper()
-    if attr == "fuel":
-        for v in values:
-            if v and v.upper() == h:
-                return v
     if attr == "transmission":
         if h in ("MANUAL", "MT"):
             h = "MT"
@@ -304,19 +251,10 @@ def match_attr_value(attr: str, hint: str, values: set) -> str | None:
                 h = "AT"
             elif len(autos) == 1:
                 h = autos[0]
-        for v in values:
-            if v and v.upper() == h:
-                return v
     if attr == "trim":
         h = h.replace(" PLUS", "+").replace("PLUS", "+").replace(" ", "")
-        for v in values:
-            if v and v.replace(" PLUS", "+").replace("PLUS", "+").replace(" ", "").upper() == h:
-                return v
     if attr == "engine" and re.match(r"^\d+(\.\d+)?$", h):
         h = h + "L"
-    for v in values:
-        if v and v.upper() == h:
-            return v
     return h if h in values else None
 
 

@@ -152,7 +152,6 @@ _MODEL_ALIASES = {
     "fortuner": ("FORTUNER", "Toyota"), "glanza": ("GLANZA", "Toyota"),
     "scorpio": ("SCORPIO", "Mahindra"), "thar": ("THAR", "Mahindra"),
     "xuv700": ("XUV700", "Mahindra"), "xuv500": ("XUV500", "Mahindra"),
-    "nano": ("NANO", "Tata"),
     "ace": ("ACE", "Tata"), "dost": ("DOST", "Ashok Leyland"),
 }
 

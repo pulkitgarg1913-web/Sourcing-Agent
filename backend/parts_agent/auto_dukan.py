@@ -1035,10 +1035,8 @@ class AutoDukanAdapter:
             await self._wait(300)
 
         requested = _clean(getattr(profile, attr) or "")
-        hint_key = {"brand": "make", "model": "model", "year": "year", "variant": "variant"}.get(field)
+        hint_key = {"brand": "make", "model": "model", "year": "year"}.get(field)
         hint = _clean(profile.hints.get(hint_key, "")) if hint_key else ""
-        if field == "variant" and not hint:
-            hint = _clean(profile.hints.get("trim", ""))
         display_options = options
         if field == "year" and not requested and not hint:
             catalog_years = variants.get_model_catalog_years(profile.maker or "", profile.model or "")
@@ -1109,7 +1107,7 @@ class AutoDukanAdapter:
             await self._search_fallback(profile)
             return None
 
-        if field == "variant" and (requested or hint or boodmo_variant or profile.hints.get("trim")):
+        if field == "variant" and (requested or hint or boodmo_variant):
             log.info("AutoDukan variant could not be matched/selected in dropdown; falling back to direct search bar")
             await self._search_fallback(profile)
             return None
@@ -1644,27 +1642,20 @@ class AutoDukanAdapter:
         if not (self._advanced_signature == sig and self._advanced_ok):
             need = await self.advance(profile)
             if need:
-                known_car = bool((profile.maker or profile.hints.get("make")) and (profile.model or profile.hints.get("model")))
-                if known_car:
-                    log.info("AutoDukan collect encountered need %s on known vehicle; falling back to direct search bar", need.field)
-                    await self._search_fallback(profile)
-                else:
-                    elapsed = round(time.time() - t0_collect, 2)
-                    outcome = SearchOutcome(
-                        vendor=self.name,
-                        status="extraction_failed",
-                        vehicle_label=vehicle,
-                        listings=[],
-                        source_url=self.last_search_url or self.page.url,
-                        message=need.question,
-                        elapsed_seconds=elapsed,
-                        clarification_required=True,
-                        missing_fields=[need.field],
-                    )
-                    m.total_seconds = elapsed
-                    m.status = outcome.status
-                    perf_monitor.log_supplier_completed(self.session_id, self.name)
-                    return outcome
+                elapsed = round(time.time() - t0_collect, 2)
+                outcome = SearchOutcome(
+                    vendor=self.name,
+                    status="extraction_failed",
+                    vehicle_label=vehicle,
+                    listings=[],
+                    source_url=self.last_search_url or self.page.url,
+                    message=need.question,
+                    elapsed_seconds=elapsed,
+                )
+                m.total_seconds = elapsed
+                m.status = outcome.status
+                perf_monitor.log_supplier_completed(self.session_id, self.name)
+                return outcome
 
         if getattr(self, "_using_search_fallback", False):
             vehicle = f"{profile.maker or profile.hints.get('make') or ''} {profile.model or profile.hints.get('model') or ''}".strip() or "the requested vehicle"

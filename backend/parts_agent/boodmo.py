@@ -698,42 +698,13 @@ class BoodmoAdapter:
             self._advanced_signature = sig
             self._advanced_ok = True
             return None
-        while q:
+        q = variants.next_question(remaining, exclude=tuple(profile.variant_filters))
+        if q:
             attr, values = q
-            hint_val = profile.hints.get(attr)
-            if hint_val:
-                matched = variants.match_attr_value(attr, hint_val, set(values))
-                if matched:
-                    profile.variant_filters[attr] = matched
-                    remaining = variants.unique_labels(variants.apply_filters(labels, profile.variant_filters))
-                    if len(remaining) == 1:
-                        profile.variant = remaining[0]
-                        self.progress(f"Only one variant fits: {profile.variant}")
-                        await self._select_variant(profile.variant, labels)
-                        self._advanced_signature = sig
-                        self._advanced_ok = True
-                        return None
-                    q = variants.next_question(remaining, exclude=tuple(profile.variant_filters))
-                    continue
             return NeedInput(field="variant_attr", attr=attr, options=values,
                              question=variants.question_for(attr, values, remaining),
                              note=f"Boodmo lists {len(remaining)} {profile.model.title()} "
                                   f"{profile.year} variants." if not profile.variant_filters else None)
-
-        # Check if user's trim hint matches one of remaining variants
-        trim_hint = (profile.hints.get("trim") or "").strip().lower()
-        if trim_hint:
-            matched_variant = next(
-                (l for l in remaining if re.search(rf"\b{re.escape(trim_hint)}\b", l.lower())),
-                None
-            )
-            if matched_variant:
-                profile.variant = matched_variant
-                self.progress(f"Matched variant using trim '{trim_hint}': {profile.variant}")
-                await self._select_variant(profile.variant, labels)
-                self._advanced_signature = sig
-                self._advanced_ok = True
-                return None
         spoken = variants.describe_differences(remaining)
         listed = "; ".join(f"{i + 1}, {s}" for i, s in enumerate(spoken))
         return NeedInput(field="variant", options=remaining, spoken=spoken,
@@ -893,27 +864,20 @@ class BoodmoAdapter:
         if not self._advanced_ok and not getattr(self, "_using_search_fallback", False):
             need = await self.advance(profile)
             if need:
-                known_car = bool((profile.maker or profile.hints.get("make")) and (profile.model or profile.hints.get("model")))
-                if known_car:
-                    log.info("Boodmo collect encountered need %s on known vehicle; falling back to direct search", need.field)
-                    await self._search_fallback(profile)
-                else:
-                    elapsed = round(time.time() - t0_collect, 2)
-                    outcome = SearchOutcome(
-                        vendor=self.name,
-                        status="failed",
-                        vehicle_label=" ".join(x for x in (profile.maker, profile.model, profile.year, profile.variant) if x),
-                        listings=[],
-                        source_url=self.page.url if self.page else BASE,
-                        message=need.question,
-                        elapsed_seconds=elapsed,
-                        clarification_required=True,
-                        missing_fields=[need.field],
-                    )
-                    m.total_seconds = elapsed
-                    m.status = outcome.status
-                    perf_monitor.log_supplier_completed(self.session_id, self.name)
-                    return outcome
+                elapsed = round(time.time() - t0_collect, 2)
+                outcome = SearchOutcome(
+                    vendor=self.name,
+                    status="failed",
+                    vehicle_label=" ".join(x for x in (profile.maker, profile.model, profile.year, profile.variant) if x),
+                    listings=[],
+                    source_url=self.page.url if self.page else BASE,
+                    message=need.question,
+                    elapsed_seconds=elapsed,
+                )
+                m.total_seconds = elapsed
+                m.status = outcome.status
+                perf_monitor.log_supplier_completed(self.session_id, self.name)
+                return outcome
 
         if getattr(self, "_using_search_fallback", False):
             vehicle = f"{profile.maker or profile.hints.get('make') or ''} {profile.model or profile.hints.get('model') or ''}".strip() or "the requested vehicle"
