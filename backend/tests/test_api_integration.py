@@ -109,7 +109,7 @@ class APIIntegrationTests(unittest.TestCase):
         from server import CONVERSATIONS
         mock_convo = MagicMock()
         mock_convo.reply = AsyncMock(return_value=None)
-        mock_convo.state = {"profile": {"year": "2021"}}
+        mock_convo.state = {"profile": {"year": "2021"}, "pending": {"field": "year"}}
         CONVERSATIONS[thread_id] = mock_convo
 
         try:

@@ -39,6 +39,21 @@ uvicorn server:app --host 0.0.0.0 --port 8000 --reload
 
 # Run Tests (from backend directory)
 python3 -m unittest discover tests
+
+# Run Performance Monitoring & Latency Benchmark Tests
+python3 -m unittest backend/tests/test_performance_monitoring.py
+python3 -m unittest backend/tests/test_postgres_database.py
+
+# Run Standalone Performance Benchmark Runner
+python3 backend/scripts/benchmark_runner.py --concurrency 1 --queries 7 --mode sequential
+python3 backend/scripts/benchmark_runner.py --concurrency 5 --queries 7 --mode concurrent
+
+# Connect to Database via psql
+psql -h /tmp -U postgres -d parts_sourcing
+# or: psql "postgresql://postgres@/parts_sourcing?host=/tmp"
+
+# Migrate SQLite records to PostgreSQL
+python3 backend/scripts/migrate_to_postgres.py
 ```
 
 ### Frontend Setup
@@ -48,6 +63,21 @@ cd frontend
 npm install
 npm run dev                               # opens Vite dev server at http://localhost:5173
 ```
+
+### Performance Monitoring & Analytics Dashboard
+
+Access the SaaS performance monitoring dashboard by clicking the **"Performance Analytics"** tab in the top navigation bar at `http://localhost:5173`.
+
+Features:
+- **KPI Overview Cards**: Total searches, success rate, average latency, P50/P95/P99 latencies, and discovery rate.
+- **Latency Distribution & Trends**: Percentile calculations using NIST Type 7 linear interpolation, histogram distribution, and SVG historical trends.
+- **10-Stage Component Tracking**: Granular timing across LLM parsing, supplier search wall-clock, HTML rendering, product extraction, and verification.
+- **Supplier-Wise Comparison**: Dynamic performance matrix across Boodmo, AutoDukan, and future suppliers.
+- **Search Quality & Extraction Completeness**: Field completeness tracking across 7 core attributes (title, price, part#, brand, compatibility, stock, URL) vs. verified fitment coverage.
+- **Searchable Request History**: Filterable request log with stage-level inspection modal.
+- **Integrated Load Testing**: Configurable concurrency benchmarks (1, 5, 10, 20) with realistic automotive queries.
+
+For full architectural details, database schema, API documentation, and calculation methodologies, see [docs/PERFORMANCE_MONITORING.md](docs/PERFORMANCE_MONITORING.md).
 
 ### Production Deployment (Vercel + Container Backend)
 

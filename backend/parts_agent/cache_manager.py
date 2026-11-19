@@ -17,21 +17,25 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .models import Listing, SearchOutcome
+from .db import get_db as _get_db, is_postgres_configured
 
 log = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "parts_cache.db"
 
 
-def _get_db() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH), timeout=10.0)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
 def init_db():
     """Create tables, indexes, and pre-seed demo cases if empty."""
+    if is_postgres_configured():
+        schema_file = Path(__file__).resolve().parent.parent / "sql" / "postgres_schema.sql"
+        if schema_file.exists():
+            try:
+                with _get_db() as conn:
+                    conn.execute(schema_file.read_text())
+                return
+            except Exception as e:
+                log.warning("PostgreSQL schema check in cache_manager: %s", e)
+
     with _get_db() as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS search_cache (
@@ -182,7 +186,7 @@ def get_cached_search(maker: Optional[str], model: Optional[str], year: Optional
                     log.info("Cache EXPIRED for %s", row["key"])
                     return None
 
-                raw_data = json.loads(row["data"])
+                raw_data = json.loads(row["data"]) if isinstance(row["data"], str) else row["data"]
                 age_minutes = max(0, int((now - created_at) / 60))
                 matched_key = row["key"]
                 is_demo = any(o.get("is_demo") for o in raw_data) or (expires_at and (expires_at - created_at > 86400 * 2))

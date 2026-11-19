@@ -33,6 +33,7 @@ from .boodmo import BoodmoAdapter
 from .browser_manager import get_browser_manager
 from .models import NeedInput, SearchOutcome, VehicleProfile
 from .perf_logger import perf_monitor
+from .perf_tracker import get_tracker
 from .intent import (
     AMBIGUOUS_CLARIFICATION_MESSAGE,
     DEFAULT_OUT_OF_SCOPE_MESSAGE,
@@ -153,6 +154,9 @@ def _session(config) -> Session:
 
 class State(TypedDict, total=False):
     request: str
+    request_id: Optional[str]
+    thread_id: Optional[str]
+    is_benchmark: Optional[bool]
     intent: Optional[str]
     out_of_scope: Optional[bool]
     profile: dict                  # Boodmo profile, retained for summary compatibility
@@ -278,12 +282,17 @@ def _other_profiles(profiles: dict[str, VehicleProfile], vendor: str) -> list[Ve
 # ---------------------------------------------------------------- nodes
 
 async def understand(state: State, config) -> State:
+    t_und_0 = time.perf_counter()
     text = state["request"]
 
     # 1. Strict Intent Validation before any LLM parsing or adapter calls
     intent_res = await classify_intent_async(text, has_active_session=False)
     if intent_res.category == IntentCategory.OUT_OF_SCOPE:
         restriction_msg = intent_res.suggested_reply or DEFAULT_OUT_OF_SCOPE_MESSAGE
+        thread_id = (config.get("configurable") or {}).get("thread_id", "")
+        tracker = get_tracker(thread_id)
+        if tracker:
+            tracker.record_stage("query_understanding", (time.perf_counter() - t_und_0) * 1000.0)
         return {
             "out_of_scope": True,
             "intent": "OUT_OF_SCOPE",
@@ -299,6 +308,10 @@ async def understand(state: State, config) -> State:
 
     if intent_res.category == IntentCategory.AMBIGUOUS:
         clarification_msg = intent_res.suggested_reply or AMBIGUOUS_CLARIFICATION_MESSAGE
+        thread_id = (config.get("configurable") or {}).get("thread_id", "")
+        tracker = get_tracker(thread_id)
+        if tracker:
+            tracker.record_stage("query_understanding", (time.perf_counter() - t_und_0) * 1000.0)
         need = NeedInput(
             field="part",
             question=clarification_msg,
@@ -310,6 +323,7 @@ async def understand(state: State, config) -> State:
             "turns": [{"t": time.time(), "role": "mechanic", "text": text},
                       {"t": time.time(), "role": "agent", "text": clarification_msg}],
         }
+
     profile = VehicleProfile()
     try:
         parsed = await llm.parse_request_async(text)
@@ -332,6 +346,12 @@ async def understand(state: State, config) -> State:
         "autodukan": VehicleProfile.from_dict(profile.to_dict()),
     }
     turns = [{"t": time.time(), "role": "mechanic", "text": text, "parsed": parsed.model_dump()}]
+
+    thread_id = (config.get("configurable") or {}).get("thread_id", "")
+    tracker = get_tracker(thread_id)
+    if tracker:
+        tracker.record_stage("query_understanding", (time.perf_counter() - t_und_0) * 1000.0)
+
     if not profile.part:
         need = NeedInput(field="part", question="Which part do you need?", options=[])
         return _profile_updates(profiles) | {"pending": need.to_dict(), "turns": turns}
@@ -358,6 +378,7 @@ async def understand(state: State, config) -> State:
 
 
 async def navigate(state: State, config) -> State:
+    t_nav_0 = time.perf_counter()
     profiles = _profiles_from_state(state)
     session = _session(config)
 
@@ -431,10 +452,24 @@ async def navigate(state: State, config) -> State:
             "candidate": car_label,
             "vendor": "all",
         }
+    thread_id = (config.get("configurable") or {}).get("thread_id", "")
+    tracker = get_tracker(thread_id)
+    if tracker:
+        tracker.record_stage("vehicle_clarification", (time.perf_counter() - t_nav_0) * 1000.0)
     return _profile_updates(profiles) | {"pending": need}
 
 
 async def interpret(state: State, config) -> State:
+    t_int_0 = time.perf_counter()
+    res = await _interpret_internal(state, config)
+    thread_id = (config.get("configurable") or {}).get("thread_id", "")
+    tracker = get_tracker(thread_id)
+    if tracker:
+        tracker.record_stage("vehicle_clarification", (time.perf_counter() - t_int_0) * 1000.0)
+    return res
+
+
+async def _interpret_internal(state: State, config) -> State:
     p = dict(state["pending"])
     ans = (state.get("answer") or "").strip()
     profiles = _profiles_from_state(state)
@@ -749,6 +784,28 @@ async def collect(state: State, config) -> State:
         ranked = relevance.rank_listings(all_listings, price_order="asc")
         cache_status = compute_overall_status(vendor_outcomes) if vendor_outcomes else ("success" if ranked else "completed_no_results")
 
+        tracker = get_tracker(thread_id)
+        if tracker:
+            tracker.is_cached = True
+            for vo in vendor_outcomes:
+                v_name = vo.get("vendor", "")
+                s_title = vo.get("supplier_name") or v_name.title()
+                vo_prods = len(vo.get("listings", []))
+                tracker.record_supplier_search(
+                    supplier_id=v_name,
+                    supplier_name=s_title,
+                    status=vo.get("status", "ok"),
+                    latency_ms=1.0,
+                    products_discovered=vo_prods,
+                    products_extracted=vo_prods,
+                )
+            tracker.record_stage("supplier_search_wall_clock", 1.0)
+            tracker.record_stage("html_fetching_rendering", 0.0)
+            tracker.record_stage("product_extraction", 1.0)
+            tracker.record_stage("product_verification", 0.0)
+            tracker.record_stage("relevance_filtering", 1.0)
+            tracker.record_stage("ranking_sorting", 1.0)
+
         return _profile_updates(profiles) | {"outcome": {
             "status": cache_status,
             "vehicle_label": " ".join(x for x in (
@@ -865,6 +922,7 @@ async def collect(state: State, config) -> State:
         if is_queued:
             s.announce("Server search capacity acquired. Checking prices and stock across suppliers...")
         t_start_all = time.time()
+        t_wall_start = time.perf_counter()
         perf_monitor.log_search_started(thread_id, state.get("request", ""))
 
         # Progressive concurrent supplier collection via asyncio.as_completed
@@ -887,7 +945,43 @@ async def collect(state: State, config) -> State:
                     log.warning("Error in on_supplier_completed callback: %s", cb_err)
 
         total_elapsed = round(time.time() - t_start_all, 2)
+        wall_clock_ms = round((time.perf_counter() - t_wall_start) * 1000.0, 2)
         perf_monitor.log_search_completed(thread_id, total_elapsed)
+
+        tracker = get_tracker(thread_id)
+        if tracker:
+            tracker.record_stage("supplier_search_wall_clock", wall_clock_ms)
+            for outcome in outcomes:
+                s_name = outcome.vendor
+                s_title = "Boodmo" if s_name == "boodmo" else "AutoDukan" if s_name == "autodukan" else s_name.title()
+                m = perf_monitor.get_metrics(thread_id, s_name)
+                elapsed_sec = getattr(outcome, "elapsed_seconds", 0.0) or 0.0
+                n_listings = len(outcome.listings) if outcome.listings else 0
+                b_init_ms = (getattr(m, "browser_init_seconds", 0.0) or 0.0) * 1000.0
+                nav_ms = (getattr(m, "navigation_seconds", 0.0) or 0.0) * 1000.0
+                ext_ms = (getattr(m, "extraction_seconds", 0.0) or 0.0) * 1000.0
+                ver_ms = (getattr(m, "enrichment_seconds", 0.0) or 0.0) * 1000.0
+                tracker.record_supplier_search(
+                    supplier_id=s_name,
+                    supplier_name=s_title,
+                    status=outcome.status,
+                    latency_ms=round(elapsed_sec * 1000.0, 2),
+                    products_discovered=n_listings,
+                    products_extracted=n_listings,
+                    browser_init_ms=b_init_ms,
+                    navigation_ms=nav_ms,
+                    extraction_ms=ext_ms,
+                    verification_ms=ver_ms,
+                    error_category=getattr(outcome, "error", None) or getattr(m, "error_category", None),
+                    error_message=outcome.message or getattr(m, "error_message", None),
+                    source_url=outcome.source_url,
+                )
+            all_nav_ms = max([(getattr(perf_monitor.get_metrics(thread_id, n), "navigation_seconds", 0.0) or 0.0) * 1000.0 for n in s.adapters.keys()] or [0.0])
+            all_ext_ms = max([(getattr(perf_monitor.get_metrics(thread_id, n), "extraction_seconds", 0.0) or 0.0) * 1000.0 for n in s.adapters.keys()] or [0.0])
+            all_ver_ms = max([(getattr(perf_monitor.get_metrics(thread_id, n), "enrichment_seconds", 0.0) or 0.0) * 1000.0 for n in s.adapters.keys()] or [0.0])
+            tracker.record_stage("html_fetching_rendering", round(all_nav_ms, 2))
+            tracker.record_stage("product_extraction", round(all_ext_ms, 2))
+            tracker.record_stage("product_verification", round(all_ver_ms, 2))
 
     vendor_outcomes = [asdict(outcome) for outcome in outcomes]
 
@@ -913,6 +1007,7 @@ async def collect(state: State, config) -> State:
     target_year = profile.year or str(profile.hints.get("year") or "")
     target_variant = profile.variant or ""
 
+    t_rel_0 = time.perf_counter()
     # Classify listings within each vendor_outcome ensuring vendor and supplier attributes
     for vo in vendor_outcomes:
         v_name = vo.get("vendor", "")
@@ -947,7 +1042,16 @@ async def collect(state: State, config) -> State:
         for vo in vendor_outcomes
         for listing in vo.get("listings", [])
     ]
+    t_rel_ms = round((time.perf_counter() - t_rel_0) * 1000.0, 2)
+
+    t_rank_0 = time.perf_counter()
     all_listings = relevance.rank_listings(all_listings, price_order="asc")
+    t_rank_ms = round((time.perf_counter() - t_rank_0) * 1000.0, 2)
+
+    tracker = get_tracker(thread_id)
+    if tracker:
+        tracker.record_stage("relevance_filtering", t_rel_ms)
+        tracker.record_stage("ranking_sorting", t_rank_ms)
 
     status = compute_overall_status(vendor_outcomes)
     return _profile_updates(profiles) | {"outcome": {
@@ -963,7 +1067,8 @@ async def collect(state: State, config) -> State:
     }}
 
 
-async def present(state: State) -> State:
+async def present(state: State, config=None) -> State:
+    t_pres_0 = time.perf_counter()
     if state.get("out_of_scope"):
         summary = state.get("summary") or DEFAULT_OUT_OF_SCOPE_MESSAGE
     elif state.get("cancelled"):
@@ -971,7 +1076,12 @@ async def present(state: State) -> State:
     elif state.get("error"):
         summary = f"Sorry, {state['error']}"
     else:
-        summary = summarize(VehicleProfile.from_dict(state["profile"]), state["outcome"])
+        summary = summarize(VehicleProfile.from_dict(state.get("profile") or {}), state.get("outcome") or {})
+    t_pres_ms = round((time.perf_counter() - t_pres_0) * 1000.0, 2)
+    thread_id = (config.get("configurable") or {}).get("thread_id", "") if config else state.get("thread_id", "")
+    tracker = get_tracker(thread_id)
+    if tracker:
+        tracker.record_stage("response_generation", t_pres_ms)
     return {"summary": summary, "turns": [{"t": time.time(), "role": "agent", "text": summary}]}
 
 
@@ -1184,8 +1294,15 @@ class Conversation:
             return self.state.get("pending")
         return None
 
-    async def start(self, request: str) -> Optional[dict]:
-        return await self._run({"request": request})
+    async def start(self, request: str, request_id: Optional[str] = None, is_benchmark: bool = False) -> Optional[dict]:
+        self.request_id = request_id
+        thread_id = self.config["configurable"]["thread_id"]
+        return await self._run({
+            "request": request,
+            "request_id": request_id,
+            "thread_id": thread_id,
+            "is_benchmark": is_benchmark,
+        })
 
     async def reply(self, answer: str) -> Optional[dict]:
         await self.graph.aupdate_state(self.config, {"answer": answer})

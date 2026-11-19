@@ -46,6 +46,8 @@ from parts_agent.graph import (
     _profiles_from_state,
 )
 from parts_agent.models import Listing, NeedInput, SearchOutcome, VehicleProfile
+from parts_agent.perf_tracker import create_tracker, get_tracker, remove_tracker
+from metrics_api import router as metrics_router, benchmark_router
 from parts_agent.intent import (
     AMBIGUOUS_CLARIFICATION_MESSAGE,
     DEFAULT_OUT_OF_SCOPE_MESSAGE,
@@ -103,6 +105,9 @@ async def normalize_path_middleware(request: Request, call_next):
         import re
         request.scope["path"] = re.sub(r"/+", "/", request.scope["path"])
     return await call_next(request)
+
+app.include_router(metrics_router)
+app.include_router(benchmark_router)
 
 # -----------------------------------------------------------------
 # Event Bus for SSE Streams
@@ -447,6 +452,8 @@ class StartRequest(BaseModel):
     message: str
     thread_id: Optional[str] = None
     headless: bool = True
+    request_id: Optional[str] = None
+    is_benchmark: bool = False
 
 
 class ReplyRequest(BaseModel):
@@ -600,7 +607,8 @@ def publish_completed_outcomes(thread_id: str, state: dict):
 @app.post("/api/chat/start")
 async def start_chat(payload: StartRequest):
     thread_id = payload.thread_id or str(uuid.uuid4())
-    log.info("Starting search session %s for request: '%s'", thread_id, payload.message)
+    request_id = payload.request_id or f"req_{int(time.time()*1000)}_{uuid.uuid4().hex[:8]}"
+    log.info("Starting search session %s (req: %s) for request: '%s'", thread_id, request_id, payload.message)
     lock = get_lock(thread_id)
 
     async with lock:
@@ -611,24 +619,22 @@ async def start_chat(payload: StartRequest):
         # Clear past event history but preserve active subscriber queues for this thread!
         sse_manager.clear_history(thread_id)
 
-        sse_manager.publish(
-            thread_id,
-            {"type": "log_event", "message": "Search session initiated.", "level": "info"},
-        )
-        sse_manager.publish(
-            thread_id,
-            {"type": "log_event", "message": f'Customer: "{payload.message}"', "level": "info"},
+        # Initialize monotonic performance tracking
+        tracker = create_tracker(
+            request_id=request_id,
+            thread_id=thread_id,
+            customer_query=payload.message,
+            is_benchmark=payload.is_benchmark,
         )
 
-        def announce_cb(text: str):
-            sse_manager.publish(
-                thread_id,
-                {"type": "agent_message", "message": text, "role": "agent"},
-            )
-            sse_manager.publish(
-                thread_id,
-                {"type": "log_event", "message": f"Agent: {text}", "level": "info"},
-            )
+        sse_manager.publish(
+            thread_id,
+            {"type": "log_event", "message": "Search session initiated.", "level": "info", "request_id": request_id},
+        )
+        sse_manager.publish(
+            thread_id,
+            {"type": "log_event", "message": f'Customer: "{payload.message}"', "level": "info", "request_id": request_id},
+        )
 
         # -----------------------------------------------------------------
         # Strict Intent Validation Layer
@@ -645,7 +651,7 @@ async def start_chat(payload: StartRequest):
             )
             sse_manager.publish(
                 thread_id,
-                {"type": "log_event", "message": f"Agent: {restriction_msg}", "level": "info"},
+                {"type": "log_event", "message": f"Agent: {restriction_msg}", "level": "info", "request_id": request_id},
             )
             sse_manager.publish(
                 thread_id,
@@ -659,39 +665,65 @@ async def start_chat(payload: StartRequest):
                         "message": restriction_msg,
                         "listings": [],
                     },
+                    "request_id": request_id,
                 },
             )
+            t_inst = get_tracker(thread_id)
+            if t_inst:
+                t_inst.finish(status="out_of_scope", outcome=None, profile=None, error_message=intent_res.reason)
+                remove_tracker(thread_id)
+
             return {
                 "status": "out_of_scope",
                 "thread_id": thread_id,
+                "request_id": request_id,
                 "message": restriction_msg,
             }
 
         if intent_res.category == IntentCategory.AMBIGUOUS:
             clarification_msg = intent_res.suggested_reply or AMBIGUOUS_CLARIFICATION_MESSAGE
-            log.info("Session %s requested clarification for ambiguous query: '%s'", thread_id, payload.message)
+            log.info("Session %s asked clarification for ambiguous query: '%s'", thread_id, payload.message)
             sse_manager.publish(
                 thread_id,
                 {"type": "agent_message", "message": clarification_msg, "role": "agent"},
             )
             sse_manager.publish(
                 thread_id,
-                {"type": "log_event", "message": f"Agent: {clarification_msg}", "level": "info"},
+                {"type": "log_event", "message": f"Agent: {clarification_msg}", "level": "info", "request_id": request_id},
             )
             sse_manager.publish(
                 thread_id,
                 {
-                    "type": "ask_input",
-                    "field": "part",
-                    "question": clarification_msg,
-                    "options": [],
+                    "type": "need_input",
+                    "pending": {
+                        "field": "part",
+                        "question": clarification_msg,
+                        "options": [],
+                    },
+                    "profile": {},
                 },
             )
+            t_inst = get_tracker(thread_id)
+            if t_inst:
+                t_inst.finish(status="ambiguous", outcome=None, profile=None, error_message="Ambiguous request")
+                remove_tracker(thread_id)
+
             return {
-                "status": "ok",
+                "status": "ambiguous",
                 "thread_id": thread_id,
-                "message": "Clarification needed",
+                "request_id": request_id,
+                "message": clarification_msg,
             }
+
+        def announce_cb(text: str):
+            sse_manager.publish(
+                thread_id,
+                {"type": "agent_message", "message": text, "role": "agent"},
+            )
+            sse_manager.publish(
+                thread_id,
+                {"type": "log_event", "message": f"Agent: {text}", "level": "info"},
+            )
 
         # Initialize session with adapters (force headless on servers without a display)
         use_headless = payload.headless if os.environ.get("DISPLAY") else True
@@ -727,7 +759,7 @@ async def start_chat(payload: StartRequest):
                     thread_id,
                     {"type": "log_event", "message": "Analyzing request with Gemini...", "level": "info"},
                 )
-                q = await convo.start(payload.message)
+                q = await convo.start(payload.message, request_id=request_id, is_benchmark=payload.is_benchmark)
                 state = convo.state
                 profile_dict = state.get("profile") or {}
 
@@ -776,6 +808,12 @@ async def start_chat(payload: StartRequest):
                     overall_status = outcome.get("status") or "completed"
                     combined_count = len(outcome.get("listings") or [])
 
+                    # Finalize and persist metrics tracker
+                    t_inst = get_tracker(thread_id)
+                    if t_inst:
+                        t_inst.finish(status=overall_status, outcome=outcome, profile=profile_dict)
+                        remove_tracker(thread_id)
+
                     if overall_status == "success":
                         log.info("Session %s sourcing finished successfully with %d products", thread_id, combined_count)
                     elif overall_status == "completed_no_results":
@@ -792,6 +830,7 @@ async def start_chat(payload: StartRequest):
                             "summary": summary,
                             "outcome": outcome,
                             "profile": profile_dict,
+                            "request_id": request_id,
                         },
                     )
                     sse_manager.publish(
@@ -802,6 +841,7 @@ async def start_chat(payload: StartRequest):
                             "total_elapsed": outcome.get("total_elapsed", 0.0),
                             "status": overall_status,
                             "outcome": outcome,
+                            "request_id": request_id,
                         },
                     )
                     # Sourcing completed; release browser memory immediately
@@ -811,6 +851,10 @@ async def start_chat(payload: StartRequest):
                         pass
             except Exception as e:
                 log.exception("Error in convo.start")
+                t_inst = get_tracker(thread_id)
+                if t_inst:
+                    t_inst.finish(status="failed", outcome=None, profile=None, error_message=str(e))
+                    remove_tracker(thread_id)
                 try:
                     await close_session(thread_id)
                 except Exception:
@@ -831,6 +875,7 @@ async def start_chat(payload: StartRequest):
     return {
         "status": "ok",
         "thread_id": thread_id,
+        "request_id": request_id,
         "message": "Session started",
     }
 
@@ -929,6 +974,12 @@ async def reply_chat(payload: ReplyRequest):
                     overall_status = outcome.get("status") or "completed"
                     combined_count = len(outcome.get("listings") or [])
 
+                    # Finalize and persist metrics tracker
+                    t_inst = get_tracker(thread_id)
+                    if t_inst:
+                        t_inst.finish(status=overall_status, outcome=outcome, profile=profile_dict)
+                        remove_tracker(thread_id)
+
                     if overall_status == "success":
                         log.info("Session %s sourcing finished successfully with %d products", thread_id, combined_count)
                     elif overall_status == "completed_no_results":
@@ -945,6 +996,7 @@ async def reply_chat(payload: ReplyRequest):
                             "summary": summary,
                             "outcome": outcome,
                             "profile": profile_dict,
+                            "request_id": t_inst.request_id if t_inst else None,
                         },
                     )
                     sse_manager.publish(
@@ -955,6 +1007,7 @@ async def reply_chat(payload: ReplyRequest):
                             "total_elapsed": outcome.get("total_elapsed", 0.0),
                             "status": overall_status,
                             "outcome": outcome,
+                            "request_id": t_inst.request_id if t_inst else None,
                         },
                     )
                     # Sourcing completed; release browser memory immediately
@@ -964,6 +1017,10 @@ async def reply_chat(payload: ReplyRequest):
                         pass
             except Exception as e:
                 log.exception("Error in convo.reply")
+                t_inst = get_tracker(thread_id)
+                if t_inst:
+                    t_inst.finish(status="failed", outcome=None, profile=None, error_message=str(e))
+                    remove_tracker(thread_id)
                 try:
                     await close_session(thread_id)
                 except Exception:
@@ -999,6 +1056,10 @@ async def cancel_chat(payload: Dict[str, str]):
             log.warning("Error closing session %s on cancel: %s", thread_id, e)
         CONVERSATIONS.pop(thread_id, None)
         SESSION_LOCKS.pop(thread_id, None)
+        t_inst = get_tracker(thread_id)
+        if t_inst:
+            t_inst.finish(status="cancelled", outcome=None, profile=None, error_message="Search session canceled by user")
+            remove_tracker(thread_id)
         sse_manager.publish(
             thread_id,
             {"type": "log_event", "message": "Search session canceled by user.", "level": "warning"},
@@ -1078,6 +1139,7 @@ async def transcribe_audio(
 async def reset_session(payload: Dict[str, str]):
     thread_id = payload.get("thread_id")
     if thread_id:
+        remove_tracker(thread_id)
         await close_session(thread_id)
         CONVERSATIONS.pop(thread_id, None)
         sse_manager.clear(thread_id)

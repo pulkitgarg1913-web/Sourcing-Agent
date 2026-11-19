@@ -6,6 +6,7 @@ import SupplierMonitor from "./components/SupplierMonitor"
 import ActivityLog from "./components/ActivityLog"
 import ProductResults from "./components/ProductResults"
 import NotificationToast from "./components/NotificationToast"
+import AnalyticsDashboard from "./components/analytics/AnalyticsDashboard"
 import {
   startChat,
   replyChat,
@@ -105,6 +106,7 @@ export default function App() {
   const [overallStatus, setOverallStatus] = useState("Idle")
   const [isSearching, setIsSearching] = useState(false)
   const [mobileTab, setMobileTab] = useState("chat") // "chat" | "results"
+  const [currentView, setCurrentView] = useState("agent") // "agent" | "analytics"
 
   const resultsScrollRef = useRef(null)
   const unsubscribeRef = useRef(null)
@@ -623,110 +625,118 @@ export default function App() {
         setHeadless={setHeadless}
         onReset={handleReset}
         connected={connected}
+        currentView={currentView}
+        setCurrentView={setCurrentView}
       />
 
-      {/* Mobile / Tablet Responsive Tab Switcher (Visible on < lg) */}
-      <div className="lg:hidden flex items-center justify-around border-b border-slate-200 bg-white px-2 py-1.5 shrink-0 text-xs">
-        <button
-          type="button"
-          onClick={() => setMobileTab("chat")}
-          className={`flex items-center gap-2 px-4 py-1.5 rounded-lg font-semibold transition-all cursor-pointer ${
-            mobileTab === "chat"
-              ? "bg-blue-600 text-white shadow-xs"
-              : "text-slate-600 hover:bg-slate-100"
-          }`}
-        >
-          <MessageSquare className="w-4 h-4" />
-          <span>Agent Chat</span>
-          {pendingQuestion && (
-            <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
-          )}
-        </button>
-        <button
-          type="button"
-          onClick={() => setMobileTab("results")}
-          className={`flex items-center gap-2 px-4 py-1.5 rounded-lg font-semibold transition-all cursor-pointer ${
-            mobileTab === "results"
-              ? "bg-blue-600 text-white shadow-xs"
-              : "text-slate-600 hover:bg-slate-100"
-          }`}
-        >
-          <Layers className="w-4 h-4" />
-          <span>Extracted Results</span>
-          <span
-            className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
-              mobileTab === "results"
-                ? "bg-blue-700 text-white"
-                : "bg-slate-200 text-slate-700"
-            }`}
-          >
-            {listings.length}
-          </span>
-        </button>
-      </div>
-
-      {/* Main Two-Panel Workspace Dashboard */}
-      <main className="flex-1 min-h-0 w-full max-w-[1920px] mx-auto p-3 sm:p-4 flex flex-col lg:flex-row gap-4 overflow-hidden">
-        {/* Left Panel: Conversational Agent (38% width on desktop) */}
-        <div
-          className={`w-full lg:w-[38%] xl:w-[37%] 2xl:w-[35%] h-full flex flex-col min-h-0 ${
-            mobileTab === "chat" ? "flex" : "hidden lg:flex"
-          }`}
-        >
-          <ConversationPanel
-            messages={messages}
-            pendingQuestion={pendingQuestion}
-            vehicleProfile={vehicleProfile}
-            onSendMessage={handleSendMessage}
-            onReplyQuestion={handleReplyQuestion}
-            isSearching={isSearching}
-            activeSupplierCount={suppliers.length}
-          />
-        </div>
-
-        {/* Right Panel: Live Extraction & Results (62% width on desktop) */}
-        <div
-          className={`flex-1 h-full min-h-0 flex flex-col overflow-hidden ${
-            mobileTab === "results" ? "flex" : "hidden lg:flex"
-          }`}
-        >
-          {/* Top Section: Supplier Monitor & Collapsible Activity Logs */}
-          <div className="shrink-0 space-y-3 mb-3">
-            {/* Live Supplier Search Monitor Cards */}
-            <SupplierMonitor
-              suppliers={suppliers}
-              onViewSupplierResults={handleViewResults}
-              activeFilter={activeFilter}
-            />
-
-            {/* Real-time Activity Log and Summary Counters */}
-            <ActivityLog
-              logs={logs}
-              totalSuppliers={suppliers.length}
-              completedSuppliers={completedSuppliers}
-              failedSuppliers={failedSuppliers}
-              totalProducts={listings.length}
-              totalVerifiedPrices={totalVerifiedPrices}
-              overallStatus={overallStatus}
-            />
+      {currentView === "analytics" ? (
+        <AnalyticsDashboard />
+      ) : (
+        <>
+          {/* Mobile / Tablet Responsive Tab Switcher (Visible on < lg) */}
+          <div className="lg:hidden flex items-center justify-around border-b border-slate-200 bg-white px-2 py-1.5 shrink-0 text-xs">
+            <button
+              type="button"
+              onClick={() => setMobileTab("chat")}
+              className={`flex items-center gap-2 px-4 py-1.5 rounded-lg font-semibold transition-all cursor-pointer ${
+                mobileTab === "chat"
+                  ? "bg-blue-600 text-white shadow-xs"
+                  : "text-slate-600 hover:bg-slate-100"
+              }`}
+            >
+              <MessageSquare className="w-4 h-4" />
+              <span>Agent Chat</span>
+              {pendingQuestion && (
+                <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={() => setMobileTab("results")}
+              className={`flex items-center gap-2 px-4 py-1.5 rounded-lg font-semibold transition-all cursor-pointer ${
+                mobileTab === "results"
+                  ? "bg-blue-600 text-white shadow-xs"
+                  : "text-slate-600 hover:bg-slate-100"
+              }`}
+            >
+              <Layers className="w-4 h-4" />
+              <span>Extracted Results</span>
+              <span
+                className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                  mobileTab === "results"
+                    ? "bg-blue-700 text-white"
+                    : "bg-slate-200 text-slate-700"
+                }`}
+              >
+                {listings.length}
+              </span>
+            </button>
           </div>
 
-          {/* Dedicated Independently Scrollable Results Area */}
-          <div
-            ref={resultsScrollRef}
-            className="flex-1 min-h-0 overflow-y-auto space-y-4 pr-1"
-          >
-            <ProductResults
-              listings={listings}
-              boodmoListings={boodmoListings}
-              autodukanListings={autodukanListings}
-              suppliers={suppliers}
-              activeFilter={activeFilter}
-              onSelectFilter={setActiveFilter}
-            />
-          </div>
-        </div>
-      </main>
+          {/* Main Two-Panel Workspace Dashboard */}
+          <main className="flex-1 min-h-0 w-full max-w-[1920px] mx-auto p-3 sm:p-4 flex flex-col lg:flex-row gap-4 overflow-hidden">
+            {/* Left Panel: Conversational Agent (38% width on desktop) */}
+            <div
+              className={`w-full lg:w-[38%] xl:w-[37%] 2xl:w-[35%] h-full flex flex-col min-h-0 ${
+                mobileTab === "chat" ? "flex" : "hidden lg:flex"
+              }`}
+            >
+              <ConversationPanel
+                messages={messages}
+                pendingQuestion={pendingQuestion}
+                vehicleProfile={vehicleProfile}
+                onSendMessage={handleSendMessage}
+                onReplyQuestion={handleReplyQuestion}
+                isSearching={isSearching}
+                activeSupplierCount={suppliers.length}
+              />
+            </div>
+
+            {/* Right Panel: Live Extraction & Results (62% width on desktop) */}
+            <div
+              className={`flex-1 h-full min-h-0 flex flex-col overflow-hidden ${
+                mobileTab === "results" ? "flex" : "hidden lg:flex"
+              }`}
+            >
+              {/* Top Section: Supplier Monitor & Collapsible Activity Logs */}
+              <div className="shrink-0 space-y-3 mb-3">
+                {/* Live Supplier Search Monitor Cards */}
+                <SupplierMonitor
+                  suppliers={suppliers}
+                  onViewSupplierResults={handleViewResults}
+                  activeFilter={activeFilter}
+                />
+
+                {/* Real-time Activity Log and Summary Counters */}
+                <ActivityLog
+                  logs={logs}
+                  totalSuppliers={suppliers.length}
+                  completedSuppliers={completedSuppliers}
+                  failedSuppliers={failedSuppliers}
+                  totalProducts={listings.length}
+                  totalVerifiedPrices={totalVerifiedPrices}
+                  overallStatus={overallStatus}
+                />
+              </div>
+
+              {/* Dedicated Independently Scrollable Results Area */}
+              <div
+                ref={resultsScrollRef}
+                className="flex-1 min-h-0 overflow-y-auto space-y-4 pr-1"
+              >
+                <ProductResults
+                  listings={listings}
+                  boodmoListings={boodmoListings}
+                  autodukanListings={autodukanListings}
+                  suppliers={suppliers}
+                  activeFilter={activeFilter}
+                  onSelectFilter={setActiveFilter}
+                />
+              </div>
+            </div>
+          </main>
+        </>
+      )}
 
       {/* Toast Notifications */}
       <NotificationToast
